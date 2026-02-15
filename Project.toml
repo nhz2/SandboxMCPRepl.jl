@@ -1,0 +1,20 @@
+name = "SandboxMCPRepl"
+uuid = "a01f8ab4-3772-46a4-8f25-b289fd6fcd4a"
+version = "0.1.0"
+authors = ["nhz2 <nhz2@cornell.edu>"]
+
+[workspace]
+projects = ["test"]
+
+[deps]
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+Sandbox = "9307e30f-c43e-9ca7-d17c-c2dc59df670d"
+
+[compat]
+JSON = "1.4.0"
+Random = "1.11.0"
+Revise = "3.13"
+Sandbox = "2.1"
+julia = "1.12"
