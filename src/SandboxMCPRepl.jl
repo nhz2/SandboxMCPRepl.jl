@@ -51,8 +51,17 @@ struct WriterThread
     end
 end
 
-function repl_worker_script(; sentinel::Vector{UInt8})::String
+const REVISE_STARTUP = """
+    try
+        using Revise
+    catch e
+        @warn "Error initializing Revise" exception=(e, catch_backtrace())
+    end
     """
+
+function repl_worker_script(; sentinel::Vector{UInt8}, startup::String)::String
+    """
+    $(startup)
     using InteractiveUtils
     while true
         ## READ ##
@@ -67,13 +76,16 @@ function repl_worker_script(; sentinel::Vector{UInt8})::String
         ## EVAL and PRINT##
         try
             @isdefined(Revise) && Revise.revise(;throw=true)
-            show(stdout,  MIME"text/plain"(), eval(Meta.parse(String(code); raise=false)))
+            show(stdout,  MIME"text/plain"(), include_string(Main, String(code)))
         catch e
             try
                 print(stdout, "\\nERROR: ")
                 showerror(stdout, e)
                 println(stdout, "\\nStacktrace:")
-                for frame in stacktrace(catch_backtrace())
+                # First 8 are just from include_string and top level stuff
+                local traces = stacktrace(catch_backtrace())
+                local interesting = something(findlast(f->startswith(repr(f), "top-level scope at string"), traces), length(traces))
+                for frame in traces[1:interesting]
                     show(stdout, MIME"text/plain"(), frame)
                     println(stdout)
                 end
@@ -90,6 +102,7 @@ function repl_worker_script(; sentinel::Vector{UInt8})::String
 end
 
 mutable struct JuliaSession
+    use_revise::Bool
     project_path::Union{String, Nothing}
     worker_env::Dict{String, String}
     read_only_paths::Vector{String}
@@ -107,6 +120,7 @@ mutable struct JuliaSession
 end
 
 function JuliaSession(;
+        use_revise::Bool=false,
         project_path::Union{String, Nothing}=nothing,
         worker_env::Dict{String, String}=Dict{String, String}(),
         read_only_paths::Vector{String}=String[],
@@ -130,6 +144,7 @@ function JuliaSession(;
     other_depots = filter(!startswith(realpath(syspath)), DEPOT_PATH)
     read_only_paths = [read_only_paths; syspath; other_depots;]
     JuliaSession(
+        use_revise,
         project_path,
         worker_env,
         read_only_paths,
@@ -216,7 +231,7 @@ function reset_session!(x::JuliaSession)::Nothing
         )
         x.exe = Sandbox.preferred_executor()()
         julia_path = joinpath(Sys.BINDIR, "julia")
-        script = repl_worker_script(;x.sentinel)
+        script = repl_worker_script(;x.sentinel, startup=ifelse(x.use_revise,REVISE_STARTUP,""))
         cmd = pipeline(
             Sandbox.build_executor_command(x.exe, config, Cmd([julia_path, "--project=$(pwd)", "-e", script]));
             stdin = x.worker_in,
@@ -389,7 +404,10 @@ function eval_session!(x::JuliaSession, code::String, deadline::UInt64, out_limi
             process_event(take!(event_channel))
         else
             local timer = Timer(0.1) do t
-                put!(event_channel, :timer=>UInt8[])
+                try
+                    put!(event_channel, :timer=>UInt8[])
+                catch
+                end
                 nothing
             end
             next_event = take!(event_channel)
