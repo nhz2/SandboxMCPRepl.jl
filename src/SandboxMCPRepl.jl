@@ -2,25 +2,32 @@ module SandboxMCPRepl
 using Sandbox: Sandbox, SandboxConfig
 using Random: RandomDevice
 
-export start_server
-export julia_eval
+export JuliaSession
+export reset_session!
+export eval_session!
+export clean_up_session!
+export EvalResults
 
 const MAX_CODE_SIZE = 2^23
 const MAX_READ_PACKET_SIZE = 2^23
 
-struct ReaderThread
-    channel::Channel{Vector{UInt8}}
-    function ReaderThread(stream)
-        channel = Channel{Vector{UInt8}}(; spawn=true) do ch
+function spawn_reader(name::Symbol, event_channel::Channel{Pair{Symbol, Vector{UInt8}}}, stream)
+    Threads.@spawn begin
+        try
             while !eof(stream)
-                n_avail = min(MAX_READ_PACKET_SIZE, bytesavailable(stream))
+                n_avail = max(min(MAX_READ_PACKET_SIZE, bytesavailable(stream)), 1)
                 out = zeros(UInt8, n_avail)
                 n = readbytes!(stream, out)
+                if iszero(n)
+                    out[1] = read(stream, UInt8)
+                    n = 1
+                end
                 resize!(out, n)
-                put!(ch, out)
+                put!(event_channel, name=>out)
             end
+        finally
+            put!(event_channel, name=>UInt8[]) # Signal done with a empty vector
         end
-        new(channel)
     end
 end
 
@@ -29,19 +36,18 @@ struct WriterThread
     writing_flag::Threads.Atomic{Bool}
     function WriterThread(stream)
         writing_flag = Threads.Atomic{Bool}(false)
-        channel = Channel{Vector{UInt8}}(; spawn=true) do ch
-            while true
-                code = take!(ch)
-                message = zeros(UInt8, 8 + length(code))
-                message[1:8] .= reinterpret(UInt8, [htol(Int64(length(code)))])
-                message[9:end] .= code
-                writing_flag[] = true
-                write(stream, message)
-                flush(stream)
-                writing_flag[] = false
-            end
+        ch = Channel{Vector{UInt8}}()
+        Threads.@spawn while true
+            code = take!(ch)
+            message = zeros(UInt8, 8 + length(code))
+            message[1:8] .= reinterpret(UInt8, [htol(Int64(length(code)))])
+            message[9:end] .= code
+            writing_flag[] = true
+            write(stream, message)
+            flush(stream)
+            writing_flag[] = false
         end
-        new(channel, writing_flag)
+        new(ch, writing_flag)
     end
 end
 
@@ -84,7 +90,7 @@ function repl_worker_script(; sentinel::Vector{UInt8})::String
 end
 
 mutable struct JuliaSession
-    project_path::String
+    project_path::Union{String, Nothing}
     worker_env::Dict{String, String}
     read_only_paths::Vector{String}
     read_write_paths::Vector{String}
@@ -94,9 +100,8 @@ mutable struct JuliaSession
     worker_in::Pipe
     in_writer::Union{WriterThread, Nothing}
     worker_out::Pipe
-    out_reader::Union{ReaderThread, Nothing}
     worker_err::Pipe
-    err_reader::Union{ReaderThread, Nothing}
+    event_channel::Channel{Pair{Symbol, Vector{UInt8}}}
     worker # output of `run` or `nothing`
     exe # output of `Sandbox.preferred_executor()()` or `nothing`
 end
@@ -114,14 +119,16 @@ function JuliaSession(;
         Dict(
             "PATH" => "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
             "HOME" => ENV["HOME"],
-            "LANG" => ENV["C.UTF-8"],
+            "LANG" => "C.UTF-8",
             "LINES" => "$(display_lines)",
             "COLUMNS" => "300",
             "JULIA_DEPOT_PATH" => join(["/tmp/"*temp_depot; DEPOT_PATH;], ":"),
             "JULIA_NUM_THREADS" => "1",
         )
     )
-    read_only_paths = [read_only_paths; dirname(Sys.BINDIR); DEPOT_PATH;]
+    syspath = dirname(Sys.BINDIR)
+    other_depots = filter(!startswith(realpath(syspath)), DEPOT_PATH)
+    read_only_paths = [read_only_paths; syspath; other_depots;]
     JuliaSession(
         project_path,
         worker_env,
@@ -133,9 +140,8 @@ function JuliaSession(;
         Pipe(),
         nothing,
         Pipe(),
-        nothing,
         Pipe(),
-        nothing,
+        Channel{Pair{Symbol, Vector{UInt8}}}(6),
         nothing,
         nothing,
     )
@@ -159,20 +165,15 @@ function clean_up_session!(x::JuliaSession)
     end
     x.worker_out = Pipe()
     try
-        !isnothing(x.out_reader) && close(x.out_reader.channel)
-    catch
-    end
-    x.out_reader = nothing
-    try
         close(x.worker_err)
     catch
     end
     x.worker_err = Pipe()
     try
-        !isnothing(x.err_reader) && close(x.err_reader.channel)
+        close(x.event_channel)
     catch
     end
-    x.err_reader = nothing
+    x.event_channel = Channel{Pair{Symbol, Vector{UInt8}}}(6)
     try
         !isnothing(x.worker) && kill(x.worker)
     catch
@@ -185,6 +186,7 @@ function clean_up_session!(x::JuliaSession)
     x.exe = nothing
     x.working = false
     x.fresh = false
+    nothing
 end
 
 function reset_session!(x::JuliaSession)::Nothing
@@ -200,12 +202,12 @@ function reset_session!(x::JuliaSession)::Nothing
     try
         config = SandboxConfig(
             merge(
-                Dict{String, String}(map(abspath(i)=>abspath(i), x.read_only_paths)),
+                Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_only_paths)),
                 Dict{String, String}(
                     "/" => Sandbox.debian_rootfs(),
                 ),
             ),
-            Dict{String, String}(map(abspath(i)=>abspath(i), x.read_write_paths)),
+            Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_write_paths)),
             x.worker_env;
             stdin = x.worker_in,
             stdout = x.worker_out,
@@ -214,16 +216,17 @@ function reset_session!(x::JuliaSession)::Nothing
         )
         x.exe = Sandbox.preferred_executor()()
         julia_path = joinpath(Sys.BINDIR, "julia")
-        script = repl_worker_script(;sentinel)
+        script = repl_worker_script(;x.sentinel)
         cmd = pipeline(
-            Sandbox.build_executor_command(exe, config, Cmd([julia_path, "--project=$(pwd)", "-e", script]));
+            Sandbox.build_executor_command(x.exe, config, Cmd([julia_path, "--project=$(pwd)", "-e", script]));
             stdin = x.worker_in,
             stdout = x.worker_out,
             stderr = x.worker_err,
         )
         x.worker = run(cmd; wait=false)
-        x.out_reader = ReaderThread(x.worker_out)
-        x.err_reader = ReaderThread(x.worker_err)
+        sleep(0.1)
+        spawn_reader(:err, x.event_channel, x.worker_err)
+        spawn_reader(:out, x.event_channel, x.worker_out)
         x.in_writer = WriterThread(x.worker_in)
         x.working = true
     catch
@@ -244,17 +247,51 @@ end
 
 function append_out!(x::LimitedOutput, data::Vector{UInt8})::LimitedOutput
     out_limit = x.out_limit
-    n_add_start = max(out_limit-length(x.start), length(data))
+    n_add_start = max(min(out_limit-length(x.start), length(data)), 0)
     append!(x.start, @view(data[1:n_add_start]))
     d = @view(data[n_add_start+1: end])
     n_extra = out_limit - length(x.last)
-    n_discard =  max(length(d) - n_extra, 0)
+    n_discard = max(length(d) - n_extra, 0)
     x.n_missing += n_discard
     append!(x.last, d)
     for i in 1:n_discard
         popfirst!(x.last)
     end
     x
+end
+
+function out_endswith(x::LimitedOutput, data::Vector{UInt8})::Bool
+    n = length(data)
+    if x.n_missing > 0
+        length(x.last) ≥ n || return false
+    else
+        length(x.last) + length(x.start) ≥ n || return false
+    end
+    n_in_last = min(n, length(x.last))
+    @view(x.last[end-n_in_last+1:end]) == @view(data[end-n_in_last+1:end]) || return false
+    n_in_start = n - n_in_last
+    @view(x.start[end-n_in_start+1:end]) == @view(data[1:n_in_start]) || return false
+    true
+end
+
+# Used to remove the sentinel
+function drop_end!(x::LimitedOutput, n::Int)::LimitedOutput
+    @assert n ≤ length(x.start) + x.n_missing + length(x.last)
+    n_in_last = min(n, length(x.last))
+    n_in_missing = min(n-n_in_last, x.n_missing)
+    n_in_start = n-n_in_last-n_in_missing
+    for i in 1:n_in_last
+        pop!(x.last)
+    end
+    x.n_missing -= n_in_missing
+    for i in 1:n_in_start
+        pop!(x.start)
+    end
+    x
+end
+
+function nbytes(x::LimitedOutput)::Int64
+    length(x.start) + x.n_missing + length(x.last)
 end
 
 function nice_string(x::LimitedOutput)::String
@@ -276,6 +313,7 @@ struct EvalResults
     err::LimitedOutput
     timed_out::Bool
     worker_died::Bool
+    exitcode::Int64 # only valid if worker_died is true
 end
 
 function eval_session!(x::JuliaSession, code::String, deadline::UInt64, out_limit::Int64)::EvalResults
@@ -283,71 +321,88 @@ function eval_session!(x::JuliaSession, code::String, deadline::UInt64, out_limi
     @assert out_limit ≥ 256
     @assert !x.in_writer.writing_flag[]
     time_left() = (deadline - time_ns())%Int64
+    event_channel = x.event_channel
     out = LimitedOutput(;out_limit)
     err = LimitedOutput(;out_limit)
-    # main ways to check status
-    # time_left()
-    # process_exited(x.worker)
-    # isopen/isready(x.out_reader.channel)
-    # isopen/isready(x.err_reader.channel)
-    # isopen x.in_writer.channel
-    put!(x.in_writer.channel, collect(codeunits(code)))
+    if time_left() > 0
+        put!(x.in_writer.channel, collect(codeunits(code)))
+    end
     timed_out = false
+    out_eof = false
+    err_eof = false
+    function process_event(event)
+        local name, data = event
+        if name === :err
+            if isempty(data)
+                err_eof = true
+            end
+            append_out!(err, data)
+        elseif name === :out
+            if isempty(data)
+                out_eof = true
+            end
+            append_out!(out, data)
+        elseif name === :timer
+            nothing
+        else
+            error("unreachable")
+        end
+        nothing
+    end
     while true
-        if time_left() ≤ 0
+        if time_left() ≤ 0 && !timed_out
+            try
+                close(x.worker_in)
+            catch
+            end
+            try
+                close(x.in_writer.channel)
+            catch
+            end
+            try
+                kill(x.worker)
+            catch
+            end
+            # Hopefully capture a nice stack trace, so don't close event_channel
             timed_out = true
             kill(x.worker)
         end
+        if process_exited(x.worker)
+            # Drain stdout and stderr
+            close(x.worker_out.in)
+            close(x.worker_err.in)
+            while !out_eof || !err_eof
+                process_event(take!(event_channel))
+            end
+            while !err_eof
+                data = take!(err_channel)
+                if isempty(data)
+                    err_eof = true
+                end
+                append_out!(err, data)
+            end
+            exitcode = x.worker.exitcode
+            clean_up_session!(x)
+            return EvalResults(out, err, timed_out, true, exitcode)
+        end
+        if isready(event_channel)
+            process_event(take!(event_channel))
+        else
+            local timer = Timer(0.1) do t
+                put!(event_channel, :timer=>UInt8[])
+                nothing
+            end
+            next_event = take!(event_channel)
+            close(timer)
+            process_event(next_event)
+        end
+        if !x.in_writer.writing_flag[] && out_endswith(out, x.sentinel) && !timed_out
+            # success
+            # drop sentinel
+            drop_end!(out, length(x.sentinel))
+            return EvalResults(out, err, false, false, 0)
+        end
     end
-
-
-
-    if process_exited(x.worker)
-        # early exit
-        if isready()
-    while true
-        if isready(x.out_reader.channel)
-            append!(take!(x.out_reader.channel)
-
-
 end
-
-
-
-function julia_eval(server::Server; code::String)::
-    p = run(cmd; wait=false)
-    proc_wait = @async wait(p)
-    code_message = zeros(UInt8, 8+ncodeunits(code))
-    code_message[1:8] .= reinterpret(UInt8, [htol(Int64(ncodeunits(code)))])
-    code_message[9:end] .= codeunits(code)
-    writer = @async begin
-        write(worker_in, code_message)
-        flush(worker_in)
-    end
-    reader = @async readuntil(worker_out, sentinel)
-    done_tasks, remaining_tasks = waitany([proc_wait, reader]; throw=false)
-    out_string = if reader ∈ done_tasks
-        String(fetch(reader))
-    else
-        "Julia died :("
-    end
-    kill(p)
-    close(worker_in)
-    close(worker_out)
-    cleanup(exe)
-    out_string
-end
-
-
-# function @main()
-#     while true
-#         get_request | get_exit
-#         if get_exit
-#             die
-#         else
-#             do request
-#         end
-#     end
-# end
 
 end # module SandboxMCPRepl
