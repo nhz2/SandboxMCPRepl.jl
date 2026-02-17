@@ -1,6 +1,8 @@
 module SandboxMCPRepl
 using Sandbox: Sandbox, SandboxConfig
 using Random: RandomDevice
+using ModelContextProtocol: ModelContextProtocol
+const MCP = ModelContextProtocol
 
 export JuliaSession
 export reset_session!
@@ -10,6 +12,7 @@ export EvalResults
 
 const MAX_CODE_SIZE = 2^23
 const MAX_READ_PACKET_SIZE = 2^23
+const DEFAULT_OUT_LIMIT = 200000
 
 function spawn_reader(name::Symbol, event_channel::Channel{Pair{Symbol, Vector{UInt8}}}, stream)
     Threads.@spawn begin
@@ -39,9 +42,10 @@ struct WriterThread
         ch = Channel{Vector{UInt8}}()
         Threads.@spawn while true
             code = take!(ch)
-            message = zeros(UInt8, 8 + length(code))
-            message[1:8] .= reinterpret(UInt8, [htol(Int64(length(code)))])
-            message[9:end] .= code
+            io = IOBuffer(;sizehint= 8 + length(code))
+            write(io, htol(Int64(length(code))))
+            write(io, code)
+            message = take!(io)
             writing_flag[] = true
             write(stream, message)
             flush(stream)
@@ -115,7 +119,7 @@ mutable struct JuliaSession
     worker_out::Pipe
     worker_err::Pipe
     event_channel::Channel{Pair{Symbol, Vector{UInt8}}}
-    worker # output of `run` or `nothing`
+    worker::Union{Base.Process, Nothing} # output of `run` or `nothing`
     exe # output of `Sandbox.preferred_executor()()` or `nothing`
 end
 
@@ -129,7 +133,7 @@ function JuliaSession(;
     )
     sentinel = [codeunits("\n__JULIA-MCP-SENTINEL__"); rand(RandomDevice(), UInt8('A'):UInt8('Z'), 32); UInt8('\n');]
     temp_depot = String(view(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 16), :))
-    worker_env = merge(worker_env,
+    worker_env = merge(
         Dict(
             "PATH" => "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
             "HOME" => ENV["HOME"],
@@ -138,7 +142,8 @@ function JuliaSession(;
             "COLUMNS" => "300",
             "JULIA_DEPOT_PATH" => join(["/tmp/"*temp_depot; DEPOT_PATH;], ":"),
             "JULIA_NUM_THREADS" => "1",
-        )
+        ),
+        worker_env,
     )
     syspath = dirname(Sys.BINDIR)
     other_depots = filter(!startswith(realpath(syspath)), DEPOT_PATH)
@@ -170,7 +175,8 @@ function clean_up_session!(x::JuliaSession)
     end
     x.worker_in = Pipe()
     try
-        !isnothing(x.in_writer) && close(x.in_writer.channel)
+        in_writer = x.in_writer
+        !isnothing(in_writer) && close(in_writer.channel)
     catch
     end
     x.in_writer = nothing
@@ -190,12 +196,14 @@ function clean_up_session!(x::JuliaSession)
     end
     x.event_channel = Channel{Pair{Symbol, Vector{UInt8}}}(6)
     try
-        !isnothing(x.worker) && kill(x.worker)
+        worker = x.worker
+        !isnothing(worker) && kill(worker)
     catch
     end
     x.worker = nothing
     try
-        !isnothing(x.exe) && Sandbox.cleanup(x.exe)
+        exe = x.exe
+        !isnothing(exe) && Sandbox.cleanup(exe)
     catch
     end
     x.exe = nothing
@@ -204,22 +212,23 @@ function clean_up_session!(x::JuliaSession)
     nothing
 end
 
-function reset_session!(x::JuliaSession)::Nothing
+function reset_session!(x::JuliaSession)::JuliaSession
     x.fresh = false
     if x.working
         clean_up_session!(x)
     end
-    pwd = if isnothing(x.project_path)
+    proj_path = x.project_path
+    pwd = if isnothing(proj_path)
         "/tmp/"*String(view(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 16), :))
     else
-        abspath(x.project_path)
+        abspath(proj_path)
     end
     try
         config = SandboxConfig(
             merge(
                 Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_only_paths)),
                 Dict{String, String}(
-                    "/" => Sandbox.debian_rootfs(),
+                    "/" => convert(String,Sandbox.debian_rootfs())::String,
                 ),
             ),
             Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_write_paths)),
@@ -228,6 +237,7 @@ function reset_session!(x::JuliaSession)::Nothing
             stdout = x.worker_out,
             stderr = x.worker_err,
             pwd,
+            persist = false,
         )
         x.exe = Sandbox.preferred_executor()()
         julia_path = joinpath(Sys.BINDIR, "julia")
@@ -248,7 +258,7 @@ function reset_session!(x::JuliaSession)::Nothing
         clean_up_session!(x)
         rethrow()
     end
-    nothing
+    x
 end
 
 # Possible truncated output
@@ -331,16 +341,40 @@ struct EvalResults
     exitcode::Int64 # only valid if worker_died is true
 end
 
+# This is how the results get presented to the AI
+function nice_string(r::EvalResults)::String
+    io = IOBuffer()
+    if r.worker_died
+        if r.timed_out
+            println(io, "TIMED OUT: Worker was killed after exceeding the time limit.")
+        else
+            println(io, "WORKER DIED: Process exited with code $(r.exitcode).")
+        end
+    end
+    if nbytes(r.out) > 0
+        write(io, nice_string(r.out))
+    end
+    if nbytes(r.err) > 0
+        println(io, "\n--- STDERR ---")
+        write(io, nice_string(r.err))
+    end
+    String(take!(io))
+end
+
 function eval_session!(x::JuliaSession, code::String, deadline::UInt64, out_limit::Int64)::EvalResults
     @assert x.working
     @assert out_limit ≥ 256
-    @assert !x.in_writer.writing_flag[]
+    in_writer = x.in_writer
+    @assert !isnothing(in_writer)
+    worker = x.worker
+    @assert !isnothing(worker)
+    @assert !in_writer.writing_flag[]
     time_left() = (deadline - time_ns())%Int64
     event_channel = x.event_channel
     out = LimitedOutput(;out_limit)
     err = LimitedOutput(;out_limit)
     if time_left() > 0
-        put!(x.in_writer.channel, collect(codeunits(code)))
+        put!(in_writer.channel, collect(codeunits(code)))
     end
     timed_out = false
     out_eof = false
@@ -371,32 +405,21 @@ function eval_session!(x::JuliaSession, code::String, deadline::UInt64, out_limi
             catch
             end
             try
-                close(x.in_writer.channel)
-            catch
-            end
-            try
-                kill(x.worker)
+                close(in_writer.channel)
             catch
             end
             # Hopefully capture a nice stack trace, so don't close event_channel
             timed_out = true
-            kill(x.worker)
+            kill(worker)
         end
-        if process_exited(x.worker)
+        if process_exited(worker)
             # Drain stdout and stderr
             close(x.worker_out.in)
             close(x.worker_err.in)
             while !out_eof || !err_eof
                 process_event(take!(event_channel))
             end
-            while !err_eof
-                data = take!(err_channel)
-                if isempty(data)
-                    err_eof = true
-                end
-                append_out!(err, data)
-            end
-            exitcode = x.worker.exitcode
+            exitcode = worker.exitcode
             clean_up_session!(x)
             return EvalResults(out, err, timed_out, true, exitcode)
         end
@@ -414,7 +437,7 @@ function eval_session!(x::JuliaSession, code::String, deadline::UInt64, out_limi
             close(timer)
             process_event(next_event)
         end
-        if !x.in_writer.writing_flag[] && out_endswith(out, x.sentinel) && !timed_out
+        if !in_writer.writing_flag[] && out_endswith(out, x.sentinel) && !timed_out
             # success
             # drop sentinel
             drop_end!(out, length(x.sentinel))
@@ -422,5 +445,174 @@ function eval_session!(x::JuliaSession, code::String, deadline::UInt64, out_limi
         end
     end
 end
+
+const server_lock = ReentrantLock()
+const sessions = Dict{String, JuliaSession}()
+const read_only_paths = String[]
+const read_write_paths = String[]
+const worker_env = Dict{String, String}()
+
+function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
+    lock(server_lock) do
+        local deadline = time_ns() + round(UInt64, params["timeout"]*1E9)
+        local is_temp = isempty(params["env_path"])
+        local session = if is_temp
+            JuliaSession(; use_revise=false, read_only_paths, read_write_paths, worker_env)
+        else
+            get!(sessions, abspath(params["env_path"])) do
+                JuliaSession(; use_revise=true, project_path=abspath(params["env_path"]),
+                    read_only_paths, read_write_paths, worker_env)
+            end
+        end
+        try
+            if !session.working
+                reset_session!(session)
+            end
+            nice_string(eval_session!(session, params["code"], deadline, DEFAULT_OUT_LIMIT))
+        catch e
+            clean_up_session!(session)
+            MCP.CallToolResult(
+                content = [MCP.TextContent(text = repr(e))],
+                is_error = true
+            )
+        finally
+            if is_temp
+                clean_up_session!(session)
+            end
+        end
+    end
+end
+
+const help_string = """
+Usage: julia --project=<SandboxMCPRepl dir> -m SandboxMCPRepl [options]
+
+Options:
+    --read-only=PATH1:PATH2:...   Colon-separated paths mounted read-only in the sandbox.
+    --read-write=PATH1:PATH2:...  Colon-separated paths mounted read-write in the sandbox.
+    --env=KEY=VALUE               Environment variable passed to worker sessions. Can be repeated.
+    --help, -h                    Show this message and exit.
+"""
+
+function @main(args::Vector{String})
+    ro = String[]
+    rw = String[]
+    env = Dict{String, String}()
+    for arg in args
+        local val
+        if startswith(arg, "--read-only=")
+            val = split(arg, '='; limit=2)[2]
+            append!(ro, filter(!isempty, split(val, ':')))
+        elseif startswith(arg, "--read-write=")
+            val = split(arg, '='; limit=2)[2]
+            append!(rw, filter(!isempty, split(val, ':')))
+        elseif startswith(arg, "--env=")
+            parts = split(arg, '='; limit=3)
+            if length(parts) != 3 || isempty(parts[2])
+                println(stderr, "Invalid --env format (expected KEY=VALUE): $(repr(arg))")
+                println(stderr, "Run with --help for usage.")
+                exit(1)
+            end
+            env[String(parts[2])] = String(parts[3])
+        elseif arg == "--help" || arg == "-h"
+            println(stderr, help_string)
+            exit(1)
+        else
+            println(stderr, "Unknown argument: $(repr(arg))")
+            println(stderr, "Run with --help for usage.")
+            exit(1)
+        end
+    end
+    empty!(read_only_paths)
+    append!(read_only_paths, ro)
+    empty!(read_write_paths)
+    append!(read_write_paths, rw)
+    empty!(worker_env)
+    merge!(worker_env, env)
+    server = MCP.mcp_server(
+        name = "SandboxMCPRepl",
+        version = "1.0.0",
+        tools = [
+            MCP.MCPTool(
+                name = "julia_eval",
+                description = """
+                ALWAYS use this tool to run Julia code. NEVER run julia via command line.
+
+                Persistent REPL session with state preserved between calls.
+                Each env_path gets its own session, started lazily.
+                """,
+                return_type = MCP.TextContent,
+                parameters = [
+                    MCP.ToolParameter(
+                        name = "code",
+                        type = "string",
+                        description = "Julia code to evaluate.",
+                        required = true
+                    ),
+                    MCP.ToolParameter(
+                        name = "env_path",
+                        type = "string",
+                        description = "Julia project directory path. Omit for a temporary environment.",
+                        default = "",
+                    ),
+                    MCP.ToolParameter(
+                        name = "timeout",
+                        type = "number",
+                        description = "Seconds (default: 600).",
+                        default = 600.0,
+                    ),
+                ],
+                handler = julia_eval_handler
+            ),
+            MCP.MCPTool(
+                name = "julia_restart",
+                description = """
+                Restart a Julia session, clearing all state and resetting the julia depot.
+
+                IMPORTANT: Restarting is slow and loses all session state. Very rarely needed.
+                Revise.jl is loaded automatically in every session, so code changes to loaded packages are picked up without restarting.
+                Only restart as a last resort when the session is truly broken, or code changes that Revise cannot fix.
+                """,
+                return_type = MCP.TextContent,
+                parameters = [
+                    MCP.ToolParameter(
+                        name = "env_path",
+                        type = "string",
+                        description = "Environment to restart.",
+                        required = true,
+                    ),
+                ],
+                handler = (params) -> lock(server_lock) do
+                    clean_up_session!(get!(sessions, abspath(params["env_path"])) do
+                        JuliaSession(; use_revise=true, project_path=abspath(params["env_path"]),
+                            read_only_paths, read_write_paths, worker_env)
+                    end)
+                    "Session restarted. A fresh session will start on next julia_eval call."
+                end
+            ),
+            MCP.MCPTool(
+                name = "julia_list_sessions",
+                description = """
+                List all active Julia sessions and their environments.
+                """,
+                return_type = MCP.TextContent,
+                handler = (params) -> lock(server_lock) do
+                    if isempty(sessions)
+                        "No active Julia sessions."
+                    else
+                        local lines = [
+                            "  $(repr(k)): $(ifelse(v.working, "alive", "dead"))"
+                            for (k, v) in sessions
+                        ]
+                        "Active Julia sessions:\n" * join(lines, "\n")
+                    end
+                end
+            ),
+        ]
+    )
+    MCP.start!(server)
+    return
+end
+
+precompile(main, (Vector{String},))
 
 end # module SandboxMCPRepl

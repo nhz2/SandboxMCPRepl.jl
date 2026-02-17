@@ -14,7 +14,14 @@ using Aqua: Aqua
 
 @testset "SandboxMCPRepl" begin
 
-# Aqua.test_all(SandboxMCPRepl)
+Aqua.test_ambiguities(SandboxMCPRepl)
+Aqua.test_unbound_args(SandboxMCPRepl)
+Aqua.test_undefined_exports(SandboxMCPRepl)
+Aqua.test_project_extras(SandboxMCPRepl)
+Aqua.test_stale_deps(SandboxMCPRepl)
+Aqua.test_piracies(SandboxMCPRepl)
+Aqua.test_persistent_tasks(SandboxMCPRepl)
+
 @testset "LimitedOutput" begin
     @test LimitedOutput() isa LimitedOutput
     a = LimitedOutput()
