@@ -6,7 +6,8 @@ using SandboxMCPRepl:
     out_endswith,
     drop_end!,
     nbytes,
-    nice_string
+    nice_string,
+    log_string
 
 using SandboxMCPRepl
 
@@ -78,6 +79,37 @@ Aqua.test_persistent_tasks(SandboxMCPRepl)
     @test !out_endswith(a, [0x44, 0x44])
     drop_end!(a, 2)
     @test nice_string(a) == "AB"
+end
+@testset "EvalResults" begin
+    # Successful eval with stdout only
+    r = EvalResults(LimitedOutput(collect(codeunits("hello"))), LimitedOutput(), false, false, 0)
+    @test nice_string(r) == "hello"
+    @test log_string(r) == "[OUTPUT]\nhello\n"
+
+    # Successful eval with stdout and stderr
+    r = EvalResults(LimitedOutput(collect(codeunits("out"))), LimitedOutput(collect(codeunits("err"))), false, false, 0)
+    @test nice_string(r) == "out\n--- STDERR ---\nerr"
+    @test log_string(r) == "[OUTPUT]\nout\n[STDERR]\nerr\n"
+
+    # Empty output
+    r = EvalResults(LimitedOutput(), LimitedOutput(), false, false, 0)
+    @test nice_string(r) == ""
+    @test log_string(r) == ""
+
+    # Timed out
+    r = EvalResults(LimitedOutput(collect(codeunits("partial"))), LimitedOutput(), true, true, -1)
+    @test contains(nice_string(r), "partial")
+    @test contains(nice_string(r), "TIMED OUT:")
+    @test contains(log_string(r), "partial")
+    @test contains(log_string(r), "[STATUS] Timed out")
+
+    # Worker died (not timeout)
+    r = EvalResults(LimitedOutput(collect(codeunits("x"))), LimitedOutput(), false, true, 42)
+    @test contains(nice_string(r), "WORKER DIED")
+    @test contains(nice_string(r), "42")
+    @test contains(nice_string(r), "x")
+    @test contains(log_string(r), "[STATUS] Worker exited with code: 42")
+    @test contains(log_string(r), "x")
 end
 @testset "JuliaSession" begin
     # Default session with a temp environment
