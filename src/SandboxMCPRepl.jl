@@ -10,6 +10,7 @@ export reset_session!
 export eval_session!
 export clean_up_session!
 export EvalResults
+export probe_julia
 
 const MAX_CODE_SIZE = 2^23
 const MAX_READ_PACKET_SIZE = 2^23
@@ -24,6 +25,9 @@ const read_only_paths = String[]
 const read_write_paths = String[]
 const worker_env = Dict{String, String}()
 const log_dir = Ref("")
+const julia_cmd = String[]
+const depot_path = String[]
+const out_limit = Ref(0)
 
 function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
     lock(server_lock) do
@@ -32,11 +36,11 @@ function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
         abs_env_path = abspath(env_path)
         is_temp = isempty(env_path)
         session = if is_temp
-            JuliaSession(; use_revise=false, read_only_paths, read_write_paths, worker_env)
+            JuliaSession(; use_revise=false, read_only_paths, read_write_paths, worker_env, julia_cmd, depot_path)
         else
             get!(sessions, abs_env_path) do
                 JuliaSession(; use_revise=true, project_path=abs_env_path,
-                    read_only_paths, read_write_paths, worker_env)
+                    read_only_paths, read_write_paths, worker_env, julia_cmd, depot_path)
             end
         end
         try
@@ -50,7 +54,7 @@ function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
                 end
             end
             code::String = params["code"]
-            eval_results = eval_session!(session, code, deadline, DEFAULT_OUT_LIMIT)
+            eval_results = eval_session!(session, code, deadline, out_limit[])
             r = nice_string(eval_results)
             if !isempty(log_dir[]) && !is_temp
                 out_log = log_string(eval_results)
@@ -76,15 +80,23 @@ function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
 end
 
 const help_string = """
-Usage: julia --project=<SandboxMCPRepl dir> -m SandboxMCPRepl [options]
+Usage: julia --project=<SandboxMCPRepl dir> -m SandboxMCPRepl [options] [-- julia_cmd...]
 
 Options:
     --read-only=PATH1:PATH2:...   Colon-separated paths mounted read-only in the sandbox.
     --read-write=PATH1:PATH2:...  Colon-separated paths mounted read-write in the sandbox.
     --env=KEY=VALUE               Environment variable passed to worker sessions. Can be repeated.
     --log-dir=PATH                Directory where logs of session inputs and outputs are saved.
+    --out-limit=BYTES             Very approximate max bytes of output before truncation (default: $DEFAULT_OUT_LIMIT).
     --workspace=PATH              Input relative paths are relative to this directory.
     --help, -h                    Show this message and exit.
+
+Custom Julia version:
+    Everything after `--` is a Julia launch command used for sandboxed sessions.
+    Examples:
+        -- julia +1.9               Use juliaup channel 1.9
+        -- julia +1.9 --threads=4   Use juliaup channel 1.9 with 4 threads
+        -- /opt/julia/bin/julia     Use a specific Julia binary
 """
 
 function @main(args::Vector{String})
@@ -92,7 +104,17 @@ function @main(args::Vector{String})
     rw = String[]
     env = Dict{String, String}()
     logdir::String = ""
-    for arg in args
+    outlimit::Int = DEFAULT_OUT_LIMIT
+    # Split args at "--" separator
+    dashdash_idx = findfirst(==("--"), args)
+    if isnothing(dashdash_idx)
+        main_args = args
+        julia_launch_cmd = String[]
+    else
+        main_args = args[1:dashdash_idx-1]
+        julia_launch_cmd = args[dashdash_idx+1:end]
+    end
+    for arg in main_args
         local val
         if startswith(arg, "--read-only=")
             val = split(arg, '='; limit=2)[2]
@@ -110,6 +132,13 @@ function @main(args::Vector{String})
             env[String(parts[2])] = String(parts[3])
         elseif startswith(arg, "--log-dir=")
             logdir = split(arg, '='; limit=2)[2]
+        elseif startswith(arg, "--out-limit=")
+            outlimit = parse(Int, split(arg, '='; limit=2)[2])
+            if outlimit < 256
+                println(stderr, "Invalid --out-limit value (must be ≥ 256): $(repr(arg))")
+                println(stderr, "Run with --help for usage.")
+                exit(1)
+            end
         elseif startswith(arg, "--workspace=")
             cd(split(arg, '='; limit=2)[2])
         elseif arg == "--help" || arg == "-h"
@@ -128,6 +157,18 @@ function @main(args::Vector{String})
     empty!(worker_env)
     merge!(worker_env, env)
     log_dir[] = isempty(logdir) ? "" : abspath(logdir)
+    out_limit[] = outlimit
+    # Resolve Julia command for sandboxed sessions
+    empty!(julia_cmd)
+    empty!(depot_path)
+    if !isempty(julia_launch_cmd)
+        probe_result = probe_julia(julia_launch_cmd)
+        append!(julia_cmd, probe_result.julia_cmd)
+        append!(depot_path, probe_result.depot_path)
+    else
+        push!(julia_cmd, joinpath(Sys.BINDIR, Base.julia_exename()))
+        append!(depot_path, DEPOT_PATH)
+    end
     server = MCP.mcp_server(
         name = "SandboxMCPRepl",
         version = "1.0.0",
@@ -184,7 +225,7 @@ function @main(args::Vector{String})
                 handler = (params) -> lock(server_lock) do
                     clean_up_session!(get!(sessions, abspath(params["env_path"])) do
                         JuliaSession(; use_revise=true, project_path=abspath(params["env_path"]),
-                            read_only_paths, read_write_paths, worker_env)
+                            read_only_paths, read_write_paths, worker_env, julia_cmd, depot_path)
                     end)
                     "Session restarted. A fresh session will start on next julia_eval call."
                 end

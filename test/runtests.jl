@@ -7,7 +7,8 @@ using SandboxMCPRepl:
     drop_end!,
     nbytes,
     nice_string,
-    log_string
+    log_string,
+    probe_julia
 
 using SandboxMCPRepl
 
@@ -327,6 +328,25 @@ end
     r = eval_session!(x, "displaysize()", time_ns()+600*10^9, 2000)
     @test startswith(nice_string(r.out), "(240,")
     clean_up_session!(x)
+
+    # julia_cmd and depot_path kwargs
+    probe_result = probe_julia([joinpath(Sys.BINDIR, Base.julia_exename())])
+    x = JuliaSession(;
+        julia_cmd=probe_result.julia_cmd,
+        depot_path=probe_result.depot_path,
+    )
+    reset_session!(x)
+    r = eval_session!(x, "1+1", time_ns()+600*10^9, 2000)
+    @test nice_string(r.out) == "2"
+    @test !r.worker_died
+    clean_up_session!(x)
+end
+
+@testset "probe_julia" begin
+    result = probe_julia([joinpath(Sys.BINDIR, Base.julia_exename())])
+    @test length(result.julia_cmd) == 1
+    @test result.julia_cmd[1] == joinpath(Sys.BINDIR, Base.julia_exename())
+    @test !isempty(result.depot_path)
 end
 
 end # testset SandboxMCPRepl

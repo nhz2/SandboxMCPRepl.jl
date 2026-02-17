@@ -89,7 +89,52 @@ function repl_worker_script(; sentinel::Vector{UInt8}, startup::String)::String
     """
 end
 
+"""
+    probe_julia(cmd::Vector{String}) -> (julia_cmd=String[], depot_path=String[])
+
+Probe a Julia installation to discover its binary path and depot paths.
+`cmd` is the user's launch command, e.g. `["julia", "+1.9", "--threads=4"]`.
+
+Returns a named tuple with:
+- `julia_cmd`: the resolved binary path plus any extra arguments from `cmd[2:end]`
+- `depot_path`: the depot path entries from the target Julia
+"""
+function probe_julia(cmd::Vector{String})
+    # Output format: "<ncodeunits>:<value>"
+    # Order: BINDIR, EXENAME, then each DEPOT_PATH entry
+    probe_script = """
+        for s in [Sys.BINDIR, Base.julia_exename(), DEPOT_PATH...]
+            print(ncodeunits(s), ":", s)
+        end
+    """
+    local output
+    output = readchomp(Cmd([cmd..., "--startup-file=no", "-e", probe_script]))
+    strings = String[]
+    pos = 1
+    while pos <= ncodeunits(output)
+        colon = findnext(':', output, pos)::Int
+        n = parse(Int, SubString(output, pos, colon - 1))
+        pos = colon + 1
+        val = String(SubString(output, pos, pos + n - 1))
+        push!(strings, val)
+        pos += n
+    end
+    length(strings) >= 2 || error("Expected at least 2 values (BINDIR, EXENAME) from probe, got $(length(strings))")
+    bindir = strings[1]
+    exename = strings[2]
+    depot_path = strings[3:end]
+    julia_bin = joinpath(bindir, exename)
+    julia_cmd = if length(cmd) >= 2 && startswith(cmd[2], '+')
+        [julia_bin; cmd[3:end]]
+    else
+        [julia_bin; cmd[2:end]]
+    end
+    return (; julia_cmd, depot_path)
+end
+
 mutable struct JuliaSession
+    julia_cmd::Vector{String}
+    depot_path::Vector{String}
     use_revise::Bool
     project_path::Union{String, Nothing}
     worker_env::Dict{String, String}
@@ -108,6 +153,8 @@ mutable struct JuliaSession
 end
 
 function JuliaSession(;
+        julia_cmd::Vector{String}=[joinpath(Sys.BINDIR, Base.julia_exename())],
+        depot_path::Vector{String}=copy(DEPOT_PATH),
         use_revise::Bool=false,
         project_path::Union{String, Nothing}=nothing,
         worker_env::Dict{String, String}=Dict{String, String}(),
@@ -124,15 +171,17 @@ function JuliaSession(;
             "LANG" => "C.UTF-8",
             "LINES" => "$(display_lines)",
             "COLUMNS" => "300",
-            "JULIA_DEPOT_PATH" => join(["/tmp/"*temp_depot; DEPOT_PATH;], ":"),
+            "JULIA_DEPOT_PATH" => join(["/tmp/"*temp_depot; depot_path;], ":"),
             "JULIA_NUM_THREADS" => "1",
         ),
         worker_env,
     )
-    syspath = dirname(Sys.BINDIR)
-    other_depots = filter(!startswith(realpath(syspath)), DEPOT_PATH)
+    syspath = dirname(dirname(julia_cmd[1]))
+    other_depots = filter(!startswith(realpath(syspath)), depot_path)
     read_only_paths = [read_only_paths; syspath; other_depots;]
     JuliaSession(
+        copy(julia_cmd),
+        copy(depot_path),
         use_revise,
         project_path,
         worker_env,
@@ -224,10 +273,9 @@ function reset_session!(x::JuliaSession)::JuliaSession
             persist = false,
         )
         x.exe = Sandbox.preferred_executor()()
-        julia_path = joinpath(Sys.BINDIR, "julia")
         script = repl_worker_script(;x.sentinel, startup=ifelse(x.use_revise,REVISE_STARTUP,""))
         cmd = pipeline(
-            Sandbox.build_executor_command(x.exe, config, Cmd([julia_path, "--project=$(pwd)", "-e", script]));
+            Sandbox.build_executor_command(x.exe, config, Cmd([x.julia_cmd..., "--project=$(pwd)", "-e", script]));
             stdin = x.worker_in,
             stdout = x.worker_out,
             stderr = x.worker_err,
