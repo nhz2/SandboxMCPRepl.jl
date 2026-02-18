@@ -19,6 +19,12 @@ const DEFAULT_OUT_LIMIT = 200000
 
 include("session.jl")
 
+# Copy the rootfs artifact to a path outside the depot to prevent overlay
+# leaks in nested sandboxes. Copying to /tmp breaks that cycle.
+const SAFE_ROOTFS = OncePerProcess{String}() do
+    cp(Sandbox.debian_rootfs(), joinpath(mktempdir(), "rootfs"))
+end
+
 const SERVER_LOCK = ReentrantLock()
 const SESSIONS = Dict{String, JuliaSession}()
 const SESSION_LOGS = Dict{String, String}()
@@ -302,6 +308,7 @@ function @main(args::Vector{String})
         end
         exit(1)
     end
+    SAFE_ROOTFS() # reduce latency of tool calls
     server = create_mcp_server()
     MCP.start!(server)
     return

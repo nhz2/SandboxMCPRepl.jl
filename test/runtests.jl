@@ -23,7 +23,8 @@ using SandboxMCPRepl:
     WORKER_DEPOT_PATH,
     OUT_LIMIT,
     apply_config!,
-    parse_args
+    parse_args,
+    remove_subdir_paths
 
 using Random: RandomDevice
 using SandboxMCPRepl
@@ -39,6 +40,21 @@ Aqua.test_project_extras(SandboxMCPRepl)
 Aqua.test_stale_deps(SandboxMCPRepl)
 Aqua.test_piracies(SandboxMCPRepl)
 Aqua.test_persistent_tasks(SandboxMCPRepl)
+
+@testset "remove_subdir_paths" begin
+    # Create a temp directory tree for testing
+    root = mktempdir()
+    a = joinpath(root, "a")
+    ab = joinpath(root, "a", "b")
+    abc = joinpath(root, "a", "b", "c")
+    d = joinpath(root, "d")
+    de = joinpath(root, "d", "e")
+    mkpath(abc)
+    mkpath(de)
+    # Subdirectories are removed, only roots kept
+    @test sort(remove_subdir_paths([a, ab, a, joinpath(a, "nonexisting"), abc, d, de])) == sort([a, d])
+    rm(root; recursive=true)
+end
 
 @testset "LimitedOutput" begin
     @test LimitedOutput() isa LimitedOutput
@@ -778,6 +794,28 @@ end
     finally
         cleanup_handler_sessions!()
         cd(orig_dir)
+    end
+end
+
+@testset "tmp does not leak into sandbox" begin
+    # Create a secret file on the host in /tmp
+    host_tmpdir = mktempdir()
+    secret_file = joinpath(host_tmpdir, "secret.txt")
+    write(secret_file, "SECRET")
+    @test isfile(secret_file)
+
+    x = JuliaSession()
+    try
+        reset_session!(x)
+        # Try to read the host's secret file from inside the sandbox
+        r = eval_session!(x, """
+            isfile($(repr(secret_file)))
+        """, time_ns()+60*10^9, 2000)
+        @test nice_string(r.out) == "false"
+        @test !r.worker_died
+    finally
+        clean_up_session!(x)
+        rm(host_tmpdir; recursive=true)
     end
 end
 

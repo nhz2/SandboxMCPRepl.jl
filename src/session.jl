@@ -1,3 +1,20 @@
+"""
+    remove_subdir_paths(paths) -> Vector{String}
+
+Given a list of directory paths, return only the roots — removing any path
+that is a subdirectory of another path in the list.  Paths are resolved
+via `realpath` before comparison, and duplicates are removed.
+"""
+function remove_subdir_paths(paths)
+    existing = filter(ispath, paths)
+    resolved = unique(map(realpath, existing))
+    filter(resolved) do p
+        !any(resolved) do x
+            startswith(p, x*"/")
+        end
+    end
+end
+
 function spawn_reader(name::Symbol, event_channel::Channel{Pair{Symbol, Vector{UInt8}}}, stream)
     Threads.@spawn begin
         try
@@ -134,7 +151,6 @@ end
 
 mutable struct JuliaSession
     julia_cmd::Vector{String}
-    depot_path::Vector{String}
     use_revise::Bool
     project_path::Union{String, Nothing}
     worker_env::Dict{String, String}
@@ -177,16 +193,14 @@ function JuliaSession(;
         worker_env,
     )
     syspath = dirname(dirname(julia_cmd[1]))
-    other_depots = filter(!startswith(realpath(syspath)), depot_path)
-    read_only_paths = [read_only_paths; syspath; other_depots;]
+    read_only_paths = remove_subdir_paths([read_only_paths; syspath; depot_path;])
     JuliaSession(
         copy(julia_cmd),
-        copy(depot_path),
         use_revise,
         project_path,
         worker_env,
         read_only_paths,
-        copy(read_write_paths),
+        remove_subdir_paths(read_write_paths),
         sentinel,
         false,
         true,
@@ -261,7 +275,7 @@ function reset_session!(x::JuliaSession)::JuliaSession
             merge(
                 Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_only_paths)),
                 Dict{String, String}(
-                    "/" => convert(String,Sandbox.debian_rootfs())::String,
+                    "/" => SAFE_ROOTFS(),
                 ),
             ),
             Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_write_paths)),
