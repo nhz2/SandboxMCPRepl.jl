@@ -10,7 +10,8 @@ export reset_session!
 export eval_session!
 export clean_up_session!
 export EvalResults
-export probe_julia
+
+struct HelpRequested <: Exception end
 
 const MAX_CODE_SIZE = 2^23
 const MAX_READ_PACKET_SIZE = 2^23
@@ -18,47 +19,47 @@ const DEFAULT_OUT_LIMIT = 200000
 
 include("session.jl")
 
-const server_lock = ReentrantLock()
-const sessions = Dict{String, JuliaSession}()
-const session_logs = Dict{String, String}()
-const read_only_paths = String[]
-const read_write_paths = String[]
-const worker_env = Dict{String, String}()
-const log_dir = Ref("")
-const julia_cmd = String[]
-const depot_path = String[]
-const out_limit = Ref(0)
+const SERVER_LOCK = ReentrantLock()
+const SESSIONS = Dict{String, JuliaSession}()
+const SESSION_LOGS = Dict{String, String}()
+const READ_ONLY_PATHS = String[]
+const READ_WRITE_PATHS = String[]
+const WORKER_ENV = Dict{String, String}()
+const LOG_DIR = Ref("")
+const JULIA_CMD = String[]
+const WORKER_DEPOT_PATH = String[]
+const OUT_LIMIT = Ref(0)
 
 function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
-    lock(server_lock) do
+    lock(SERVER_LOCK) do
         deadline = time_ns() + round(UInt64, params["timeout"]*1E9)
         env_path = params["env_path"]
         abs_env_path = abspath(env_path)
         is_temp = isempty(env_path)
         session = if is_temp
-            JuliaSession(; use_revise=false, read_only_paths, read_write_paths, worker_env, julia_cmd, depot_path)
+            JuliaSession(; use_revise=false, read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH)
         else
-            get!(sessions, abs_env_path) do
+            get!(SESSIONS, abs_env_path) do
                 JuliaSession(; use_revise=true, project_path=abs_env_path,
-                    read_only_paths, read_write_paths, worker_env, julia_cmd, depot_path)
+                    read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH)
             end
         end
         try
             if !session.working
                 reset_session!(session)
-                if !isempty(log_dir[]) && !is_temp
-                    mkpath(log_dir[])
-                    new_log_path = gen_log_path(log_dir[], abs_env_path)
+                if !isempty(LOG_DIR[]) && !is_temp
+                    mkpath(LOG_DIR[])
+                    new_log_path = gen_log_path(LOG_DIR[], abs_env_path)
                     write(new_log_path, "# Session started env=$(repr(abs_env_path))\n")
-                    session_logs[abs_env_path] = new_log_path
+                    SESSION_LOGS[abs_env_path] = new_log_path
                 end
             end
             code::String = params["code"]
-            eval_results = eval_session!(session, code, deadline, out_limit[])
+            eval_results = eval_session!(session, code, deadline, OUT_LIMIT[])
             r = nice_string(eval_results)
-            if !isempty(log_dir[]) && !is_temp
+            if !isempty(LOG_DIR[]) && !is_temp
                 out_log = log_string(eval_results)
-                open(session_logs[abs_env_path]; append=true) do io
+                open(SESSION_LOGS[abs_env_path]; append=true) do io
                     println(io, "[CODE]")
                     println(io, code)
                     println(io, out_log)
@@ -99,12 +100,19 @@ Custom Julia version:
         -- /opt/julia/bin/julia     Use a specific Julia binary
 """
 
-function @main(args::Vector{String})
+"""
+    parse_args(args::Vector{String})
+
+Parse CLI arguments and return a named tuple of the parsed configuration.
+Throws `ArgumentError` for invalid arguments. Throws `HelpRequested()` for `--help`.
+"""
+function parse_args(args::Vector{String})
     ro = String[]
     rw = String[]
     env = Dict{String, String}()
     logdir::String = ""
     outlimit::Int = DEFAULT_OUT_LIMIT
+    workspace::String = ""
     # Split args at "--" separator
     dashdash_idx = findfirst(==("--"), args)
     if isnothing(dashdash_idx)
@@ -125,9 +133,7 @@ function @main(args::Vector{String})
         elseif startswith(arg, "--env=")
             parts = split(arg, '='; limit=3)
             if length(parts) != 3 || isempty(parts[2])
-                println(stderr, "Invalid --env format (expected KEY=VALUE): $(repr(arg))")
-                println(stderr, "Run with --help for usage.")
-                exit(1)
+                throw(ArgumentError("Invalid --env format (expected KEY=VALUE): $(repr(arg))"))
             end
             env[String(parts[2])] = String(parts[3])
         elseif startswith(arg, "--log-dir=")
@@ -135,41 +141,86 @@ function @main(args::Vector{String})
         elseif startswith(arg, "--out-limit=")
             outlimit = parse(Int, split(arg, '='; limit=2)[2])
             if outlimit < 256
-                println(stderr, "Invalid --out-limit value (must be ≥ 256): $(repr(arg))")
-                println(stderr, "Run with --help for usage.")
-                exit(1)
+                throw(ArgumentError("Invalid --out-limit value (must be ≥ 256): $(repr(arg))"))
             end
         elseif startswith(arg, "--workspace=")
-            cd(split(arg, '='; limit=2)[2])
+            workspace = split(arg, '='; limit=2)[2]
         elseif arg == "--help" || arg == "-h"
-            println(stderr, help_string)
-            exit(1)
+            throw(HelpRequested())
         else
-            println(stderr, "Unknown argument: $(repr(arg))")
-            println(stderr, "Run with --help for usage.")
-            exit(1)
+            throw(ArgumentError("Unknown argument: $(repr(arg))"))
         end
     end
-    empty!(read_only_paths)
-    append!(read_only_paths, abspath.(ro))
-    empty!(read_write_paths)
-    append!(read_write_paths, abspath.(rw))
-    empty!(worker_env)
-    merge!(worker_env, env)
-    log_dir[] = isempty(logdir) ? "" : abspath(logdir)
-    out_limit[] = outlimit
-    # Resolve Julia command for sandboxed sessions
-    empty!(julia_cmd)
-    empty!(depot_path)
-    if !isempty(julia_launch_cmd)
-        probe_result = probe_julia(julia_launch_cmd)
-        append!(julia_cmd, probe_result.julia_cmd)
-        append!(depot_path, probe_result.depot_path)
-    else
-        push!(julia_cmd, joinpath(Sys.BINDIR, Base.julia_exename()))
-        append!(depot_path, DEPOT_PATH)
+    return (; read_only=ro, read_write=rw, env, log_dir=logdir, out_limit=outlimit, workspace, julia_launch_cmd)
+end
+
+"""
+    apply_config!(config)
+
+Apply parsed CLI configuration to module-level global state.
+`config` is the named tuple returned by [`parse_args`](@ref).
+"""
+function apply_config!(config)
+    if !isempty(config.workspace)
+        cd(config.workspace)
     end
-    server = MCP.mcp_server(
+    empty!(READ_ONLY_PATHS)
+    append!(READ_ONLY_PATHS, abspath.(config.read_only))
+    empty!(READ_WRITE_PATHS)
+    append!(READ_WRITE_PATHS, abspath.(config.read_write))
+    empty!(WORKER_ENV)
+    merge!(WORKER_ENV, config.env)
+    LOG_DIR[] = isempty(config.log_dir) ? "" : abspath(config.log_dir)
+    OUT_LIMIT[] = config.out_limit
+    # Resolve Julia command for sandboxed sessions
+    empty!(JULIA_CMD)
+    empty!(WORKER_DEPOT_PATH)
+    if !isempty(config.julia_launch_cmd)
+        probe_result = probe_julia(config.julia_launch_cmd)
+        append!(JULIA_CMD, probe_result.julia_cmd)
+        append!(WORKER_DEPOT_PATH, probe_result.depot_path)
+    else
+        push!(JULIA_CMD, joinpath(Sys.BINDIR, Base.julia_exename()))
+        append!(WORKER_DEPOT_PATH, DEPOT_PATH)
+    end
+    return nothing
+end
+
+# --- Callback handlers ---
+
+function julia_restart_handler(params)
+    lock(SERVER_LOCK) do
+        clean_up_session!(get!(SESSIONS, abspath(params["env_path"])) do
+            JuliaSession(; use_revise=true, project_path=abspath(params["env_path"]),
+                read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH)
+        end)
+        "Session restarted. A fresh session will start on next julia_eval call."
+    end
+end
+
+function julia_list_sessions_handler(params)
+    lock(SERVER_LOCK) do
+        if isempty(SESSIONS)
+            "No active Julia sessions."
+        else
+            local lines = [
+                "  $(repr(k)): $(ifelse(v.working, "alive", "dead"))"
+                for (k, v) in SESSIONS
+            ]
+            "Active Julia sessions:\n" * join(lines, "\n")
+        end
+    end
+end
+
+# --- MCP server setup ---
+
+"""
+    create_mcp_server()
+
+Create and return the MCP server with all tool definitions.
+"""
+function create_mcp_server()
+    MCP.mcp_server(
         name = "SandboxMCPRepl",
         version = "1.0.0",
         tools = [
@@ -192,7 +243,7 @@ function @main(args::Vector{String})
                     MCP.ToolParameter(
                         name = "env_path",
                         type = "string",
-                        description = "Julia project directory path. Omit for a temporary environment.",
+                        description = "Julia project directory path. Omit for a temporary environment and session.",
                         default = "",
                     ),
                     MCP.ToolParameter(
@@ -222,13 +273,7 @@ function @main(args::Vector{String})
                         required = true,
                     ),
                 ],
-                handler = (params) -> lock(server_lock) do
-                    clean_up_session!(get!(sessions, abspath(params["env_path"])) do
-                        JuliaSession(; use_revise=true, project_path=abspath(params["env_path"]),
-                            read_only_paths, read_write_paths, worker_env, julia_cmd, depot_path)
-                    end)
-                    "Session restarted. A fresh session will start on next julia_eval call."
-                end
+                handler = julia_restart_handler
             ),
             MCP.MCPTool(
                 name = "julia_list_sessions",
@@ -236,20 +281,28 @@ function @main(args::Vector{String})
                 List all active Julia sessions and their environments.
                 """,
                 return_type = MCP.TextContent,
-                handler = (params) -> lock(server_lock) do
-                    if isempty(sessions)
-                        "No active Julia sessions."
-                    else
-                        local lines = [
-                            "  $(repr(k)): $(ifelse(v.working, "alive", "dead"))"
-                            for (k, v) in sessions
-                        ]
-                        "Active Julia sessions:\n" * join(lines, "\n")
-                    end
-                end
+                handler = julia_list_sessions_handler
             ),
         ]
     )
+end
+
+function @main(args::Vector{String})
+    try
+        config = parse_args(args)
+        apply_config!(config)
+    catch e
+        if e isa HelpRequested
+            println(stderr, help_string)
+        elseif e isa ArgumentError
+            println(stderr, e.msg)
+            println(stderr, "Run with --help for usage.")
+        else
+            rethrow()
+        end
+        exit(1)
+    end
+    server = create_mcp_server()
     MCP.start!(server)
     return
 end
