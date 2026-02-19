@@ -4,7 +4,7 @@ This MCP server is for Julia developers who want their AI coding assistant to ha
 
 The simplest alternative is giving your AI assistant a shell tool to call `julia -e "..."`, but each call starts a fresh Julia process — you pay full startup and compilation cost every time, and nothing persists between calls. This server keeps a Julia session alive across calls, so variables, definitions, and loaded packages carry over naturally as a conversation progresses.
 
-The tool prompts and MCP interface design are based on [julia-mcp](https://github.com/aplavin/julia-mcp) MIT License Copyright (c) 2026 Alexander Plavin.
+The tool prompts and MCP interface design are based on [julia-mcp](https://github.com/aplavin/julia-mcp) by Alexander Plavin.
 
 Requires Linux and Julia ≥1.12.
 
