@@ -5,12 +5,6 @@ using ModelContextProtocol: ModelContextProtocol
 using Dates: Dates
 const MCP = ModelContextProtocol
 
-export JuliaSession
-export reset_session!
-export eval_session!
-export clean_up_session!
-export EvalResults
-
 struct HelpRequested <: Exception end
 struct VersionRequested <: Exception end
 

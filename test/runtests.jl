@@ -1,6 +1,11 @@
 using Test: @test, @testset, @test_throws
 using SandboxMCPRepl:
     SandboxMCPRepl,
+    JuliaSession,
+    clean_up_session!,
+    reset_session!,
+    eval_session!,
+    EvalResults,
     LimitedOutput,
     append_out!,
     out_endswith,
@@ -29,7 +34,6 @@ using SandboxMCPRepl:
     remove_subdir_paths
 
 using Random: RandomDevice
-using SandboxMCPRepl
 
 using Aqua: Aqua
 
