@@ -39,15 +39,25 @@ You will want to set up the MCP server for each workspace to take advantage of t
 
 Add the MCP server using the `claude` CLI.
 
-There are two `--` separators in this example:
-- the first one is consumed by the app launcher and starts app arguments
-- the second one is consumed by `SandboxMCPRepl` and starts the worker Julia command
-
-Without the first separator, `--workspace`, `--log-dir`, etc. are interpreted as Julia launcher arguments instead of server arguments.
-
 ```bash
-claude mcp add --scope project sandbox-julia -- ~/.julia/bin/sandbox-mcp-repl -- --workspace=. --log-dir=test-logs --read-write=. -- julia +1.12 --threads=auto
+claude mcp add --scope project --env SANDBOX_SKIP_OVERLAYFS_CHECK=true sandbox-julia -- ~/.julia/bin/sandbox-mcp-repl -- --workspace=. --log-dir=test-logs --read-write=. -- julia --threads=4
 ```
+
+Breaking down the arguments:
+
+| Argument | Description |
+|---|---|
+| `--scope project` | Registers the server for the current project only. |
+| `--env SANDBOX_SKIP_OVERLAYFS_CHECK=true` | Skips the overlay-filesystem kernel module check in Sandbox.jl. Required on systems where the `overlay` module is not loaded; safe to remove if it is. |
+| `sandbox-julia` | The name you give this MCP server. |
+| `--` | Separates `claude mcp add` options from the server command. |
+| `~/.julia/bin/sandbox-mcp-repl` | Path to the installed executable. |
+| `--` | Consumed by the Julia app launcher — separates launcher flags from SandboxMCPRepl server arguments. |
+| `--workspace=.` | Resolves relative paths (like `env_path` and `--read-write`) against the current directory. |
+| `--log-dir=test-logs` | Directory where session input/output logs are saved. |
+| `--read-write=.` | Mounts the current directory read-write inside the sandbox. |
+| `--` | Consumed by SandboxMCPRepl — everything after this is the worker Julia command. |
+| `julia --threads=4` | The Julia binary and flags used for sandboxed sessions. |
 
 ### VS Code (GitHub Copilot)
 
@@ -66,9 +76,11 @@ Add to your project's `.vscode/mcp.json`:
                 "--read-write=.",
                 "--",
                 "julia",
-                "+1.12",
-                "--threads=auto"
-            ]
+                "--threads=4"
+            ],
+            "env": {
+                "SANDBOX_SKIP_OVERLAYFS_CHECK": "true"
+            }
         }
     }
 }
