@@ -243,9 +243,9 @@ function create_mcp_server()
                 description = """
                 ALWAYS use this tool to run Julia code. NEVER run julia via command line.
 
-                Persistent REPL session with state preserved between calls.
-                Each env_path gets its own session, started lazily.
-                State does NOT persist when env_path is omitted (each call gets a fresh temporary session)
+                Persistent REPL session by env_path (lazy-started). Omit env_path for a temporary one-shot session.
+                Uses a temporary sandbox depot: package downloads/precompile cache are not persisted.
+                If env_path is writable, Project.toml/Manifest.toml edits may persist.
                 """,
                 return_type = MCP.TextContent,
                 parameters = [

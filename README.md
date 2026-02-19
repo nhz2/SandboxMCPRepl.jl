@@ -1,4 +1,4 @@
-# SandboxMCPRepl.jl Work in progress
+# SandboxMCPRepl.jl
 
 This MCP server is for Julia developers who want their AI coding assistant to have a live Julia environment to work in — not just read and write code, but actually run it.
 
@@ -12,7 +12,7 @@ Requires Linux and Julia ≥1.12.
 
 ## Tools
 
-- **julia_eval(code, env_path?, timeout?)** — execute Julia code in a persistent session. `env_path` sets the Julia project directory (omit for a temporary session). `timeout` defaults to 600s. If no `env_path` is specified the session is not persisted.
+- **julia_eval(code, env_path?, timeout?)** — execute Julia code in a persistent session. `env_path` sets the Julia project directory (omit for a temporary session). `timeout` defaults to 600s. If no `env_path` is specified the session is not persisted. The sandbox depot is temporary, so package downloads/precompile cache do not persist.
 - **julia_restart(env_path)** — stop the session for that `env_path`. A fresh session is created on the next `julia_eval` call.
 - **julia_list_sessions** — list active sessions and their status
 
@@ -23,12 +23,12 @@ It will be installed to `~/.julia/bin/sandbox-mcp-repl`.
 
 From the command line:
 ```bash
-julia -e 'using Pkg; Pkg.Apps.add(url="https://github.com/nhz2/SandboxMCPRepl.jl")'
+julia -e 'using Pkg; Pkg.Apps.add(url="https://github.com/nhz2/SandboxMCPRepl.jl", rev="v0.1.0")'
 ```
 
 Or from the Julia REPL:
 ```julia
-pkg> app add https://github.com/nhz2/SandboxMCPRepl.jl
+pkg> app add https://github.com/nhz2/SandboxMCPRepl.jl#v0.1.0
 ```
 
 ## Configuration
