@@ -244,7 +244,17 @@ function clean_up_session!(x::JuliaSession)
     x.event_channel = Channel{Pair{Symbol, Vector{UInt8}}}(6)
     try
         worker = x.worker
-        !isnothing(worker) && kill(worker)
+        if !isnothing(worker) && !process_exited(worker)
+            for i in 1:2
+                kill(worker)
+                sleep(0.1)
+                process_exited(worker) && break
+            end
+            while !process_exited(worker)
+                kill(worker)
+                sleep(2.0)
+            end
+        end
     catch
     end
     x.worker = nothing
@@ -478,6 +488,11 @@ function eval_session!(x::JuliaSession, code::String, deadline::UInt64, out_limi
             # Hopefully capture a nice stack trace, so don't close event_channel
             timed_out = true
             kill(worker)
+        elseif time_left() ≤ -Int64(10)^10 && !process_exited(worker)
+            close(x.worker_out.in)
+            close(x.worker_err.in)
+            kill(worker)
+            sleep(2.0)
         end
         if process_exited(worker)
             # Drain stdout and stderr

@@ -532,10 +532,10 @@ end
 
 # Helper to clean up all handler sessions
 function cleanup_handler_sessions!()
-    for (k, v) in collect(SESSIONS)
+    for (k, v) in pairs(SESSIONS)
         clean_up_session!(v)
-        delete!(SESSIONS, k)
     end
+    empty!(SESSIONS)
     empty!(SESSION_LOGS)
 end
 
