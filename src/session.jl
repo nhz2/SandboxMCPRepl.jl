@@ -86,13 +86,14 @@ function repl_worker_script(; sentinel::Vector{UInt8}, startup::String)::String
             try
                 print(stdout, "\\nERROR: ")
                 showerror(stdout, e)
-                println(stdout, "\\nStacktrace:")
-                # First 8 are just from include_string and top level stuff
                 local traces = stacktrace(catch_backtrace())
-                local interesting = something(findlast(f->startswith(repr(f), "top-level scope at string"), traces), length(traces))
-                for frame in traces[1:interesting]
-                    show(stdout, MIME"text/plain"(), frame)
-                    println(stdout)
+                local interesting = findlast(f->startswith(repr(f), "top-level scope at string"), traces)
+                if !isnothing(interesting)
+                    println(stdout, "\\nStacktrace:")
+                    for frame in traces[1:interesting]
+                        show(stdout, MIME"text/plain"(), frame)
+                        println(stdout)
+                    end
                 end
             catch
                 println(stdout, "\\nERROR PRINTING ERROR")

@@ -15,7 +15,7 @@ struct HelpRequested <: Exception end
 
 const MAX_CODE_SIZE = 2^23
 const MAX_READ_PACKET_SIZE = 2^23
-const DEFAULT_OUT_LIMIT = 200000
+const DEFAULT_OUT_LIMIT = 20000
 
 include("session.jl")
 
@@ -94,7 +94,7 @@ Options:
     --read-write=PATH1:PATH2:...  Colon-separated paths mounted read-write in the sandbox.
     --env=KEY=VALUE               Environment variable passed to worker sessions. Can be repeated.
     --log-dir=PATH                Directory where logs of session inputs and outputs are saved.
-    --out-limit=BYTES             Very approximate max bytes of output before truncation (default: $DEFAULT_OUT_LIMIT).
+    --out-limit=BYTES             About half the max bytes of output before truncation (default: $DEFAULT_OUT_LIMIT).
     --workspace=PATH              Input relative paths are relative to this directory.
     --help, -h                    Show this message and exit.
 
@@ -237,6 +237,7 @@ function create_mcp_server()
 
                 Persistent REPL session with state preserved between calls.
                 Each env_path gets its own session, started lazily.
+                State does NOT persist when env_path is omitted (each call gets a fresh temporary session)
                 """,
                 return_type = MCP.TextContent,
                 parameters = [

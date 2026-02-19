@@ -231,6 +231,8 @@ end
             error("what")
         """, time_ns()+500*10^9, 2000)
         @test startswith(nice_string(r.out),"\nERROR: LoadError: what\n")
+        @test contains(nice_string(r.out), "top-level scope at string:1")
+        @test contains(nice_string(r.out), "Stacktrace:")
         @test !r.worker_died
 
         # parse error
@@ -239,6 +241,16 @@ end
             error("what"
         """, time_ns()+500*10^9, 2000)
         @test startswith(nice_string(r.out),"\nERROR: LoadError: ParseError:\n")
+        @test !r.worker_died
+
+        # undef var error
+        # For some reason this doesn't have regular stack trace.
+        reset_session!(x)
+        r = eval_session!(x, """
+            eror
+        """, time_ns()+500*10^9, 2000)
+        @test startswith(nice_string(r.out),"\nERROR: LoadError: UndefVarError: `eror` not defined in `Main`\n")
+        @test !contains(nice_string(r.out), "Stacktrace:")
         @test !r.worker_died
 
         # variables should persist
