@@ -37,20 +37,36 @@ You will want to set up the MCP server for each workspace to take advantage of t
 
 ### Claude Code
 
-Add the MCP server using the `claude` CLI.
+Add to your project's `.mcp.json`:
 
-```bash
-claude mcp add --scope project --env SANDBOX_SKIP_OVERLAYFS_CHECK=true sandbox-julia -- ~/.julia/bin/sandbox-mcp-repl -- --workspace=. --log-dir=test-logs --read-write=. -- julia --threads=4
+```json
+{
+  "mcpServers": {
+    "sandbox-julia": {
+      "type": "stdio",
+      "command": "~/.julia/bin/sandbox-mcp-repl",
+      "args": [
+        "--",
+        "--workspace=.",
+        "--log-dir=test-logs",
+        "--read-write=.",
+        "--",
+        "julia",
+        "--threads=4"
+      ],
+      "env": {
+        "SANDBOX_SKIP_OVERLAYFS_CHECK": "true"
+      }
+    }
+  }
+}
 ```
 
-Breaking down the arguments:
+Breaking down the options:
 
-| Argument | Description |
+| Option | Description |
 |---|---|
-| `--scope project` | Registers the server for the current project only. |
-| `--env SANDBOX_SKIP_OVERLAYFS_CHECK=true` | Skips the overlay-filesystem kernel module check in Sandbox.jl. Required on systems where the `overlay` module is not loaded; safe to remove if it is. |
 | `sandbox-julia` | The name you give this MCP server. |
-| `--` | Separates `claude mcp add` options from the server command. |
 | `~/.julia/bin/sandbox-mcp-repl` | Path to the installed executable. |
 | `--` | Consumed by the Julia app launcher — separates launcher flags from SandboxMCPRepl server arguments. |
 | `--workspace=.` | Resolves relative paths (like `env_path` and `--read-write`) against the current directory. |
@@ -58,6 +74,7 @@ Breaking down the arguments:
 | `--read-write=.` | Mounts the current directory read-write inside the sandbox. |
 | `--` | Consumed by SandboxMCPRepl — everything after this is the worker Julia command. |
 | `julia --threads=4` | The Julia binary and flags used for sandboxed sessions. |
+| `"env": {"SANDBOX_SKIP_OVERLAYFS_CHECK": "true"}` | Skips the overlay-filesystem kernel module check in Sandbox.jl. Required on systems where the `overlay` module is not loaded; safe to remove if it is. |
 
 ### VS Code (GitHub Copilot)
 
@@ -66,7 +83,7 @@ Add to your project's `.vscode/mcp.json`:
 ```json
 {
     "servers": {
-        "julia": {
+        "sandbox-julia": {
             "type": "stdio",
             "command": "${userHome}/.julia/bin/sandbox-mcp-repl",
             "args": [
