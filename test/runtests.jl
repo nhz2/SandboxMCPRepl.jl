@@ -10,6 +10,8 @@ using SandboxMCPRepl:
     log_string,
     probe_julia,
     HelpRequested,
+    VersionRequested,
+    THIS_PACKAGE_VERSION,
     julia_eval_handler,
     julia_restart_handler,
     julia_list_sessions_handler,
@@ -459,6 +461,10 @@ end
     # --help throws HelpRequested
     @test_throws HelpRequested parse_args(["--help"])
     @test_throws HelpRequested parse_args(["-h"])
+
+    # --version throws VersionRequested
+    @test_throws VersionRequested parse_args(["--version"])
+    @test_throws VersionRequested parse_args(["-v"])
 
     # Unknown argument
     @test_throws ArgumentError parse_args(["--bogus"])

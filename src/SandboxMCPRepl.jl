@@ -12,10 +12,12 @@ export clean_up_session!
 export EvalResults
 
 struct HelpRequested <: Exception end
+struct VersionRequested <: Exception end
 
 const MAX_CODE_SIZE = 2^23
 const MAX_READ_PACKET_SIZE = 2^23
 const DEFAULT_OUT_LIMIT = 20000
+const THIS_PACKAGE_VERSION::String = string(pkgversion(@__MODULE__))
 
 include("session.jl")
 
@@ -87,18 +89,24 @@ function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
 end
 
 const help_string = """
-Usage: julia --project=<SandboxMCPRepl dir> -m SandboxMCPRepl [options] [-- julia_cmd...]
+SandboxMCPRepl.jl - A MCP server for Julia developers who want their AI coding assistant to have a live Julia environment to work in.
+
+VERSION: $(THIS_PACKAGE_VERSION)
+
+Usage: sandbox-mcp-repl [julia_launcher_args...] -- [options] [-- worker_julia_cmd...]
 
 Options:
     --read-only=PATH1:PATH2:...   Colon-separated paths mounted read-only in the sandbox.
     --read-write=PATH1:PATH2:...  Colon-separated paths mounted read-write in the sandbox.
     --env=KEY=VALUE               Environment variable passed to worker sessions. Can be repeated.
-    --log-dir=PATH                Directory where logs of session inputs and outputs are saved.
+    --log-dir=PATH                Directory where logs of named-session inputs and outputs are saved.
+                                  If empty or unset, no logs are saved. Temp sessions are never logged.
     --out-limit=BYTES             About half the max bytes of output before truncation (default: $DEFAULT_OUT_LIMIT).
     --workspace=PATH              Input relative paths are relative to this directory.
+    --version, -v                 Show version and exit.
     --help, -h                    Show this message and exit.
 
-Custom Julia version:
+Worker Julia command:
     Everything after `--` is a Julia launch command used for sandboxed sessions.
     Examples:
         -- julia +1.9               Use juliaup channel 1.9
@@ -110,7 +118,9 @@ Custom Julia version:
     parse_args(args::Vector{String})
 
 Parse CLI arguments and return a named tuple of the parsed configuration.
-Throws `ArgumentError` for invalid arguments. Throws `HelpRequested()` for `--help`.
+Throws `ArgumentError` for invalid arguments.
+Throws `HelpRequested()` for `--help` and `-h`.
+Throws `VersionRequested()` for `--version` and `-v`.
 """
 function parse_args(args::Vector{String})
     ro = String[]
@@ -151,6 +161,8 @@ function parse_args(args::Vector{String})
             end
         elseif startswith(arg, "--workspace=")
             workspace = split(arg, '='; limit=2)[2]
+        elseif arg == "--version" || arg == "-v"
+            throw(VersionRequested())
         elseif arg == "--help" || arg == "-h"
             throw(HelpRequested())
         else
@@ -224,11 +236,13 @@ end
     create_mcp_server()
 
 Create and return the MCP server with all tool definitions.
+
+Based on prompts from https://github.com/aplavin/julia-mcp
 """
 function create_mcp_server()
     MCP.mcp_server(
-        name = "SandboxMCPRepl",
-        version = "1.0.0",
+        name = "SandboxMCPRepl.jl",
+        version = THIS_PACKAGE_VERSION,
         tools = [
             MCP.MCPTool(
                 name = "julia_eval",
@@ -265,7 +279,7 @@ function create_mcp_server()
             MCP.MCPTool(
                 name = "julia_restart",
                 description = """
-                Restart a Julia session, clearing all state and resetting the julia depot.
+                Restart a Julia session, clearing session state.
 
                 IMPORTANT: Restarting is slow and loses all session state. Very rarely needed.
                 Revise.jl is loaded automatically in every session, so code changes to loaded packages are picked up without restarting.
@@ -301,6 +315,8 @@ function @main(args::Vector{String})
     catch e
         if e isa HelpRequested
             println(stderr, help_string)
+        elseif e isa VersionRequested
+            println(stderr, "SandboxMCPRepl version $(THIS_PACKAGE_VERSION)")
         elseif e isa ArgumentError
             println(stderr, e.msg)
             println(stderr, "Run with --help for usage.")
