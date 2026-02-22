@@ -81,11 +81,11 @@ function repl_worker_script(; sentinel::Vector{UInt8}, startup::String)::String
         ## EVAL and PRINT##
         try
             @isdefined(Revise) && Revise.revise(;throw=true)
-            show(stdout,  MIME"text/plain"(), include_string(Main, String(code)))
+            invokelatest(show, stdout,  MIME"text/plain"(), include_string(Main, String(code)))
         catch e
             try
                 print(stdout, "\\nERROR: ")
-                showerror(stdout, e)
+                invokelatest(showerror, stdout, e)
                 local traces = stacktrace(catch_backtrace())
                 local interesting = findlast(f->startswith(repr(f), "top-level scope at string"), traces)
                 if !isnothing(interesting)
