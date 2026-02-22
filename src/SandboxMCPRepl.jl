@@ -177,10 +177,10 @@ function parse_args(args::Vector{String})
     end
     if !sandbox
         if !isempty(ro)
-            throw(ArgumentError("--no-sandbox is incompatible with --read-only"))
+            throw(ArgumentError("--sandbox=no is incompatible with --read-only"))
         end
         if !isempty(rw)
-            throw(ArgumentError("--no-sandbox is incompatible with --read-write"))
+            throw(ArgumentError("--sandbox=no is incompatible with --read-write"))
         end
     end
     return (;sandbox, read_only=ro, read_write=rw, env, log_dir=logdir, out_limit=outlimit, workspace, julia_launch_cmd)
