@@ -260,6 +260,38 @@ end
         @test !contains(nice_string(r.out), "Stacktrace:")
         @test !r.worker_died
 
+        # Custom error display
+        reset_session!(x)
+        r = eval_session!(x, """
+            struct MyError <: Exception
+                msg::String
+            end
+            function Base.showerror(io::IO, err::MyError)
+                print(io, "This is a custom error: ")
+                print(io, err.msg)
+                nothing
+            end
+            throw(MyError("test"))
+        """, time_ns()+500*10^9, 2000)
+        @test startswith(nice_string(r.out),"\nERROR: LoadError: This is a custom error: test\n")
+        @test !r.worker_died
+
+        # Custom show
+        reset_session!(x)
+        r = eval_session!(x, """
+            struct MyStruct
+                msg::String
+            end
+            function Base.show(io::IO, ::MIME"text/plain", x::MyStruct)
+                print(io, "This is a custom struct: ")
+                print(io, x.msg)
+                nothing
+            end
+            MyStruct("test")
+        """, time_ns()+500*10^9, 2000)
+        @test nice_string(r.out)== "This is a custom struct: test"
+        @test !r.worker_died
+
         # variables should persist
         reset_session!(x)
         r = eval_session!(x, """
