@@ -1,0 +1,44 @@
+{
+    "servers": {
+        "sandbox-julia": {
+            "type": "stdio",
+            "command": "bwrap",
+            "args": [
+                "--ro-bind", "/usr", "/usr",
+                "--ro-bind", "/etc", "/etc",
+                "--dir", "/tmp",
+                "--dir", "/var",
+                "--symlink", "../tmp", "var/tmp",
+                "--proc", "/proc",
+                "--dev", "/dev",
+                "--symlink", "usr/lib", "/lib",
+                "--symlink", "usr/lib64", "/lib64",
+                "--symlink", "usr/bin", "/bin",
+                "--symlink", "usr/sbin", "/sbin",
+                "--ro-bind", "${userHome}/.julia", "${userHome}/.julia",
+                "--ro-bind-try", "${userHome}/bin", "${userHome}/bin",
+                "--ro-bind-try", "${userHome}/.local/bin", "${userHome}/.local/bin",
+                "--ro-bind-try", "${userHome}/packages/julias", "${userHome}/packages/julias",
+                "--ro-bind-try", "${userHome}/github/SandboxMCPRepl.jl", "${userHome}/github/SandboxMCPRepl.jl",
+                "--bind", "${workspaceFolder}", "${workspaceFolder}",
+                "--chdir", "${workspaceFolder}",
+                "--unshare-all",
+                "--die-with-parent",
+                "--new-session",
+                "--setenv", "JULIA_DEPOT_PATH", "${workspaceFolder}/agent-depot:${userHome}/.julia:",
+                "--setenv", "JULIA_PKG_OFFLINE", "true",
+                "julia",
+                "--project=${userHome}/github/SandboxMCPRepl.jl",
+                "--startup-file=no",
+                "--module=SandboxMCPRepl",
+                "--workspace=${workspaceFolder}",
+                "--log-dir=agent-logs",
+                "--sandbox=no",
+                "--",
+                "julia",
+                "--startup-file=no",
+                "--threads=4"
+            ],
+        }
+    }
+}

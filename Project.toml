@@ -1,6 +1,6 @@
 name = "SandboxMCPRepl"
 uuid = "a01f8ab4-3772-46a4-8f25-b289fd6fcd4a"
-version = "0.1.0"
+version = "0.2.0-dev"
 authors = ["Nathan Zimmerberg <nzimmerberg@gmail.com>"]
 
 [workspace]
@@ -16,5 +16,3 @@ Sandbox = "9307e30f-c43e-9ca7-d17c-c2dc59df670d"
 ModelContextProtocol = "0.4"
 Sandbox = "2.1"
 julia = "1.12"
-
-[apps.sandbox-mcp-repl]

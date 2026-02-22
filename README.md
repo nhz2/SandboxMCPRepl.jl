@@ -6,9 +6,9 @@ The simplest alternative is giving your AI assistant a shell tool to call `julia
 
 The tool prompts and MCP interface design are based on [julia-mcp](https://github.com/aplavin/julia-mcp) by Alexander Plavin.
 
-Requires Linux and Julia ≥1.12.
+Requires Julia ≥1.12. The built-in sandbox requires Linux with a working Sandbox.jl.
 
-> **This is not a locked-down sandbox.** The Julia process runs in a Sandbox.jl sandbox primarily to make it harder to break your `~/.julia`, but it otherwise has full network access and runs as your user. It is intended for use on your own machine where you trust the code being executed, not for shared or multi-user environments.
+> **The built-in sandbox does not fully isolate the Julia process.** By default the Julia process runs in a [Sandbox.jl](https://github.com/JuliaContainerization/Sandbox.jl) sandbox. This makes it harder to accidentally break your `~/.julia` directory, but doesn't block network access.
 
 ## Tools
 
@@ -18,86 +18,98 @@ Requires Linux and Julia ≥1.12.
 
 ## Installation
 
-Install the app using Julia's package manager to get the `sandbox-mcp-repl` executable.
-It will be installed to `~/.julia/bin/sandbox-mcp-repl`.
+Clone this repo or download a release.
 
-From the command line:
-```bash
-julia -e 'using Pkg; Pkg.Apps.add(url="https://github.com/nhz2/SandboxMCPRepl.jl", rev="v0.1.0")'
-```
+Then instantiate the manifest by running:
 
-Or from the Julia REPL:
-```julia
-pkg> app add https://github.com/nhz2/SandboxMCPRepl.jl#v0.1.0
+```sh
+julia --project=. -e "using Pkg; Pkg.instantiate()"
 ```
 
 ## Configuration
 
 You will want to set up the MCP server for each workspace to take advantage of the sandboxing.
 
-### Claude Code
-
-Add to your project's `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "sandbox-julia": {
-      "type": "stdio",
-      "command": "~/.julia/bin/sandbox-mcp-repl",
-      "args": [
-        "--",
-        "--workspace=.",
-        "--log-dir=test-logs",
-        "--read-write=.",
-        "--",
-        "julia",
-        "--threads=4"
-      ],
-      "env": {
-        "SANDBOX_SKIP_OVERLAYFS_CHECK": "true"
-      }
-    }
-  }
-}
-```
-
-Breaking down the options:
-
-| Option | Description |
-|---|---|
-| `sandbox-julia` | The name you give this MCP server. |
-| `~/.julia/bin/sandbox-mcp-repl` | Path to the installed executable. |
-| `--` | Consumed by the Julia app launcher — separates launcher flags from SandboxMCPRepl server arguments. |
-| `--workspace=.` | Resolves relative paths (like `env_path` and `--read-write`) against the current directory. |
-| `--log-dir=test-logs` | Directory where session input/output logs are saved. |
-| `--read-write=.` | Mounts the current directory read-write inside the sandbox. |
-| `--` | Consumed by SandboxMCPRepl — everything after this is the worker Julia command. |
-| `julia --threads=4` | The Julia binary and flags used for sandboxed sessions. |
-| `"env": {"SANDBOX_SKIP_OVERLAYFS_CHECK": "true"}` | Skips the overlay-filesystem kernel module check in Sandbox.jl. Required on systems where the `overlay` module is not loaded; safe to remove if it is. |
-
 ### VS Code (GitHub Copilot)
 
 Add to your project's `.vscode/mcp.json`:
+
+Replace `${userHome}/github/SandboxMCPRepl.jl` with the location you have cloned this repo.
+
+#### Using a [bubblewrap](https://github.com/containers/bubblewrap) sandbox to block network access
+
+This assumes you have julia symlinks available in `~/.local/bin` and packages in `~/packages/julias` as is the default for https://github.com/abelsiqueira/jill
+
+Julia installed with juliaup currently will not work with `bwrap` see: https://github.com/JuliaLang/juliaup/issues/1204
+
+In this example an `agent-depot` directory is created in the workspace. This allows the Julia depot at `~/.julia` to be read only.
 
 ```json
 {
     "servers": {
         "sandbox-julia": {
             "type": "stdio",
-            "command": "${userHome}/.julia/bin/sandbox-mcp-repl",
+            "command": "bwrap",
             "args": [
-                "--",
+                "--ro-bind", "/usr", "/usr",
+                "--ro-bind", "/etc", "/etc",
+                "--dir", "/tmp",
+                "--dir", "/var",
+                "--symlink", "../tmp", "var/tmp",
+                "--proc", "/proc",
+                "--dev", "/dev",
+                "--symlink", "usr/lib", "/lib",
+                "--symlink", "usr/lib64", "/lib64",
+                "--symlink", "usr/bin", "/bin",
+                "--symlink", "usr/sbin", "/sbin",
+                "--ro-bind", "${userHome}/.julia", "${userHome}/.julia",
+                "--ro-bind-try", "${userHome}/bin", "${userHome}/bin",
+                "--ro-bind-try", "${userHome}/.local/bin", "${userHome}/.local/bin",
+                "--ro-bind-try", "${userHome}/packages/julias", "${userHome}/packages/julias",
+                "--ro-bind-try", "${userHome}/github/SandboxMCPRepl.jl", "${userHome}/github/SandboxMCPRepl.jl",
+                "--bind", "${workspaceFolder}", "${workspaceFolder}",
+                "--chdir", "${workspaceFolder}",
+                "--unshare-all",
+                "--die-with-parent",
+                "--new-session",
+                "--setenv", "JULIA_DEPOT_PATH", "${workspaceFolder}/agent-depot:${userHome}/.julia:",
+                "--setenv", "JULIA_PKG_OFFLINE", "true",
+                "julia",
+                "--project=${userHome}/github/SandboxMCPRepl.jl",
+                "--startup-file=no",
+                "--module=SandboxMCPRepl",
                 "--workspace=${workspaceFolder}",
-                "--log-dir=test-logs",
+                "--log-dir=agent-logs",
+                "--sandbox=no",
+                "--",
+                "julia",
+                "--startup-file=no",
+                "--threads=4"
+            ],
+        }
+    }
+}
+```
+
+#### Using the built-in sandbox
+
+```json
+{
+    "servers": {
+        "sandbox-julia": {
+            "type": "stdio",
+            "command": "julia",
+            "args": [
+                "--project=${userHome}/github/SandboxMCPRepl.jl",
+                "--startup-file=no",
+                "--module=SandboxMCPRepl",
+                "--workspace=${workspaceFolder}",
+                "--log-dir=agent-logs",
                 "--read-write=.",
                 "--",
                 "julia",
                 "--threads=4"
             ],
-            "env": {
-                "SANDBOX_SKIP_OVERLAYFS_CHECK": "true"
-            }
         }
     }
 }
@@ -106,6 +118,8 @@ Add to your project's `.vscode/mcp.json`:
 ### Server CLI arguments
 
 ```text
+--sandbox={yes*|no}           Flag to enable the Sandbox.jl sandbox and temp Julia depot. Defaults to yes.
+                              --sandbox=no is incompatible with --read-only and --read-write.
 --read-only=PATH1:PATH2:...   Colon-separated paths mounted read-only in the sandbox.
 --read-write=PATH1:PATH2:...  Colon-separated paths mounted read-write in the sandbox.
 --env=KEY=VALUE               Environment variable passed to worker sessions. Can be repeated.

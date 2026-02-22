@@ -153,6 +153,7 @@ end
 mutable struct JuliaSession
     julia_cmd::Vector{String}
     use_revise::Bool
+    sandbox::Bool
     project_path::Union{String, Nothing}
     worker_env::Dict{String, String}
     read_only_paths::Vector{String}
@@ -173,31 +174,60 @@ function JuliaSession(;
         julia_cmd::Vector{String}=[joinpath(Sys.BINDIR, Base.julia_exename())],
         depot_path::Vector{String}=copy(DEPOT_PATH),
         use_revise::Bool=false,
+        sandbox::Bool=true,
         project_path::Union{String, Nothing}=nothing,
         worker_env::Dict{String, String}=Dict{String, String}(),
         read_only_paths::Vector{String}=String[],
         read_write_paths::Vector{String}=String[],
         display_lines = 150
     )
+    if !sandbox
+        if !isempty(read_only_paths)
+            throw(ArgumentError("disabling the sandbox is incompatible with specifying read_only_paths"))
+        end
+        if !isempty(read_write_paths)
+            throw(ArgumentError("disabling the sandbox is incompatible with specifying read_write_paths"))
+        end
+    end
     sentinel = [codeunits("\n__JULIA-MCP-SENTINEL__"); rand(RandomDevice(), UInt8('A'):UInt8('Z'), 32); UInt8('\n');]
-    temp_depot = String(view(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 16), :))
-    worker_env = merge(
-        Dict(
-            "PATH" => "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
-            "HOME" => ENV["HOME"],
-            "LANG" => "C.UTF-8",
-            "LINES" => "$(display_lines)",
-            "COLUMNS" => "300",
-            "JULIA_DEPOT_PATH" => join(["/tmp/"*temp_depot; depot_path;], ":"),
-            "JULIA_NUM_THREADS" => "1",
-        ),
-        worker_env,
-    )
+    path_list_sep = ifelse(Sys.iswindows(), ";", ":")
+    worker_env = if sandbox
+        temp_depot = String(view(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 16), :))
+        merge(
+            Dict(
+                "PATH" => "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
+                "HOME" => ENV["HOME"],
+                "LANG" => "C.UTF-8",
+                "LINES" => "$(display_lines)",
+                "COLUMNS" => "300",
+                "JULIA_DEPOT_PATH" => join(["/tmp/"*temp_depot; depot_path;], ":"),
+                "JULIA_NUM_THREADS" => "1",
+            ),
+            worker_env,
+        )
+    else
+        d = merge(
+            Dict(
+                "LINES" => "$(display_lines)",
+                "COLUMNS" => "300",
+                "JULIA_DEPOT_PATH" => join(depot_path, path_list_sep),
+                "JULIA_NUM_THREADS" => "1",
+            ),
+            copy(ENV),
+            worker_env,
+        )
+        # Remove JULIA_LOAD_PATH so the worker uses the default (@, @v#.#, @stdlib).
+        # The MCP server launcher may set this to restrict loads to its own project,
+        # but the worker needs access to stdlibs and its own project environment.
+        delete!(d, "JULIA_LOAD_PATH")
+        d
+    end
     syspath = dirname(dirname(julia_cmd[1]))
     read_only_paths = remove_subdir_paths([read_only_paths; syspath; depot_path;])
     JuliaSession(
         copy(julia_cmd),
         use_revise,
+        sandbox,
         project_path,
         worker_env,
         read_only_paths,
@@ -277,34 +307,47 @@ function reset_session!(x::JuliaSession)::JuliaSession
     end
     proj_path = x.project_path
     pwd = if isnothing(proj_path)
-        "/tmp/"*String(view(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 16), :))
+        if x.sandbox
+            "/tmp/"*String(view(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 16), :))
+        else
+            mktempdir()
+        end
     else
         abspath(proj_path)
     end
+    script = repl_worker_script(;x.sentinel, startup=ifelse(x.use_revise,REVISE_STARTUP,""))
     try
-        config = SandboxConfig(
-            merge(
-                Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_only_paths)),
-                Dict{String, String}(
-                    "/" => SAFE_ROOTFS(),
+        cmd = if x.sandbox
+            config = SandboxConfig(
+                merge(
+                    Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_only_paths)),
+                    Dict{String, String}(
+                        "/" => SAFE_ROOTFS(),
+                    ),
                 ),
-            ),
-            Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_write_paths)),
-            x.worker_env;
-            stdin = x.worker_in,
-            stdout = x.worker_out,
-            stderr = x.worker_err,
-            pwd,
-            persist = false,
-        )
-        x.exe = Sandbox.preferred_executor()()
-        script = repl_worker_script(;x.sentinel, startup=ifelse(x.use_revise,REVISE_STARTUP,""))
-        cmd = pipeline(
-            Sandbox.build_executor_command(x.exe, config, Cmd([x.julia_cmd..., "--project=$(pwd)", "-e", script]));
-            stdin = x.worker_in,
-            stdout = x.worker_out,
-            stderr = x.worker_err,
-        )
+                Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_write_paths)),
+                x.worker_env;
+                stdin = x.worker_in,
+                stdout = x.worker_out,
+                stderr = x.worker_err,
+                pwd,
+                persist = false,
+            )
+            x.exe = Sandbox.preferred_executor()()
+            pipeline(
+                Sandbox.build_executor_command(x.exe, config, Cmd([x.julia_cmd..., "--project=$(pwd)", "-e", script]));
+                stdin = x.worker_in,
+                stdout = x.worker_out,
+                stderr = x.worker_err,
+            )
+        else
+            pipeline(
+                setenv(Cmd([x.julia_cmd..., "--project=$(pwd)", "-e", script]), x.worker_env; dir=pwd);
+                stdin = x.worker_in,
+                stdout = x.worker_out,
+                stderr = x.worker_err,
+            )
+        end
         x.worker = run(cmd; wait=false)
         sleep(0.1)
         spawn_reader(:err, x.event_channel, x.worker_err)
@@ -531,6 +574,6 @@ end
 
 function gen_log_path(log_dir::String, env_path::String)
     p = relpath(abspath(env_path), abspath(log_dir))
-    p_safe = replace(p, "/"=>"-s", "-"=>"--" )
-    joinpath(log_dir, "env_$(p_safe)_$(Dates.now()).log")
+    p_safe = replace(p, "/"=>"-s", "\\"=>"-b", ":"=>"-c", "-"=>"--" )
+    joinpath(log_dir, "env_$(p_safe)_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS-sss")).log")
 end

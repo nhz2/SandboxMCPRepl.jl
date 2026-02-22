@@ -6,8 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
-## [v0.1.0](https://github.com/nhz2/SandboxMCPRepl.jl/tree/v0.1.0) - 2026-02-19
+- Added option to disable the sandbox with `--sandbox=no`
+- Added a readme example of using `bwrap`
+- Removed support for installing as a Julia "app". Instead use `julia --module=SandboxMCPRepl`.
 
-### Added
+## [v0.1.0](https://github.com/nhz2/SandboxMCPRepl.jl/tree/v0.1.0) - 2026-02-19
 
 - Initial release

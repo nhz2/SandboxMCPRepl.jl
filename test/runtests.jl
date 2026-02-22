@@ -22,6 +22,7 @@ using SandboxMCPRepl:
     julia_list_sessions_handler,
     SESSIONS,
     SESSION_LOGS,
+    SANDBOX,
     READ_ONLY_PATHS,
     READ_WRITE_PATHS,
     WORKER_ENV,
@@ -390,6 +391,16 @@ end
     @test nice_string(r.out) == "2"
     @test !r.worker_died
     clean_up_session!(x)
+
+    # no sandbox
+    test_dir = mktempdir()
+    write(joinpath(test_dir, "test-file.txt"), "stuff")
+    x = JuliaSession(;sandbox=false)
+    reset_session!(x)
+    r = eval_session!(x, "read($(repr(joinpath(test_dir, "test-file.txt"))),String)", time_ns()+600*10^9, 2000)
+    @test nice_string(r.out) == repr("stuff")
+    @test !r.worker_died
+    clean_up_session!(x)
 end
 
 @testset "probe_julia" begin
@@ -402,6 +413,7 @@ end
 @testset "parse_args" begin
     # Empty args
     c = parse_args(String[])
+    @test c.sandbox
     @test isempty(c.read_only)
     @test isempty(c.read_write)
     @test isempty(c.env)
@@ -409,6 +421,12 @@ end
     @test c.out_limit == SandboxMCPRepl.DEFAULT_OUT_LIMIT
     @test c.workspace == ""
     @test isempty(c.julia_launch_cmd)
+
+    # --sandbox=no
+    c = parse_args(String["--sandbox=no"])
+    @test c.sandbox == false
+    @test_throws ArgumentError parse_args(["--read-only=/a:/b:/c", "--sandbox=no"])
+    @test_throws ArgumentError parse_args(["--read-write=/d:/e", "--sandbox=no"])
 
     # --read-only with multiple colon-separated paths
     c = parse_args(["--read-only=/a:/b:/c"])
@@ -504,6 +522,7 @@ end
     @test c.env == Dict("HOME" => "/sandbox", "LANG" => "C")
     @test c.log_dir == "/logs"
     @test c.out_limit == 5000
+    @test c.sandbox
     @test c.workspace == "/work"
     @test c.julia_launch_cmd == ["julia", "+1.10"]
 
@@ -519,6 +538,7 @@ end
         # Basic config with no workspace change
         config = parse_args(["--read-only=/tmp", "--read-write=/var", "--env=X=1", "--out-limit=999"])
         apply_config!(config)
+        @test SANDBOX[]
         @test READ_ONLY_PATHS == [abspath("/tmp")]
         @test READ_WRITE_PATHS == [abspath("/var")]
         @test WORKER_ENV == Dict("X" => "1")
@@ -530,11 +550,17 @@ end
         # Empty config resets everything
         config = parse_args(String[])
         apply_config!(config)
+        @test SANDBOX[]
         @test isempty(READ_ONLY_PATHS)
         @test isempty(READ_WRITE_PATHS)
         @test isempty(WORKER_ENV)
         @test OUT_LIMIT[] == SandboxMCPRepl.DEFAULT_OUT_LIMIT
         @test LOG_DIR[] == ""
+
+        # --sandbox=no
+        config = parse_args(String["--sandbox=no"])
+        apply_config!(config)
+        @test !SANDBOX[]
 
         # Workspace changes directory
         tdir = mktempdir()

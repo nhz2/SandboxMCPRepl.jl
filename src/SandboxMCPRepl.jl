@@ -31,6 +31,7 @@ const LOG_DIR = Ref("")
 const JULIA_CMD = String[]
 const WORKER_DEPOT_PATH = String[]
 const OUT_LIMIT = Ref(0)
+const SANDBOX = Ref(true)
 
 function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
     lock(SERVER_LOCK) do
@@ -39,11 +40,11 @@ function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
         abs_env_path = abspath(env_path)
         is_temp = isempty(env_path)
         session = if is_temp
-            JuliaSession(; use_revise=false, read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH)
+            JuliaSession(; use_revise=false, read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH, sandbox=SANDBOX[])
         else
             get!(SESSIONS, abs_env_path) do
                 JuliaSession(; use_revise=true, project_path=abs_env_path,
-                    read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH)
+                    read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH, sandbox=SANDBOX[])
             end
         end
         try
@@ -90,12 +91,13 @@ VERSION: $(THIS_PACKAGE_VERSION)
 Usage: sandbox-mcp-repl [julia_launcher_args...] -- [options] [-- worker_julia_cmd...]
 
 Options:
+    --sandbox={yes*|no}           Flag to enable the Sandbox.jl sandbox and temp Julia depot. Defaults to yes.
+                                --sandbox=no is incompatible with --read-only and --read-write.
     --read-only=PATH1:PATH2:...   Colon-separated paths mounted read-only in the sandbox.
     --read-write=PATH1:PATH2:...  Colon-separated paths mounted read-write in the sandbox.
     --env=KEY=VALUE               Environment variable passed to worker sessions. Can be repeated.
-    --log-dir=PATH                Directory where logs of named-session inputs and outputs are saved.
-                                  If empty or unset, no logs are saved. Temp sessions are never logged.
-    --out-limit=BYTES             About half the max bytes of output before truncation (default: $DEFAULT_OUT_LIMIT).
+    --log-dir=PATH                Directory where logs of named-session inputs and outputs are saved. If empty or unset, no logs are saved. Temp sessions are never logged.
+    --out-limit=BYTES             About half the max bytes of output before truncation (default: 20,000).
     --workspace=PATH              Input relative paths are relative to this directory.
     --version, -v                 Show version and exit.
     --help, -h                    Show this message and exit.
@@ -117,6 +119,7 @@ Throws `HelpRequested()` for `--help` and `-h`.
 Throws `VersionRequested()` for `--version` and `-v`.
 """
 function parse_args(args::Vector{String})
+    sandbox::Bool = true
     ro = String[]
     rw = String[]
     env = Dict{String, String}()
@@ -134,7 +137,16 @@ function parse_args(args::Vector{String})
     end
     for arg in main_args
         local val
-        if startswith(arg, "--read-only=")
+        if startswith(arg, "--sandbox=")
+            val = split(arg, '='; limit=2)[2]
+            if val == "yes"
+                sandbox = true
+            elseif val == "no"
+                sandbox = false
+            else
+                throw(ArgumentError("Invalid --sandbox format (expected yes or no): $(repr(arg))"))
+            end
+        elseif startswith(arg, "--read-only=")
             val = split(arg, '='; limit=2)[2]
             append!(ro, filter(!isempty, split(val, ':')))
         elseif startswith(arg, "--read-write=")
@@ -163,7 +175,15 @@ function parse_args(args::Vector{String})
             throw(ArgumentError("Unknown argument: $(repr(arg))"))
         end
     end
-    return (; read_only=ro, read_write=rw, env, log_dir=logdir, out_limit=outlimit, workspace, julia_launch_cmd)
+    if !sandbox
+        if !isempty(ro)
+            throw(ArgumentError("--sandbox=no is incompatible with --read-only"))
+        end
+        if !isempty(rw)
+            throw(ArgumentError("--sandbox=no is incompatible with --read-write"))
+        end
+    end
+    return (;sandbox, read_only=ro, read_write=rw, env, log_dir=logdir, out_limit=outlimit, workspace, julia_launch_cmd)
 end
 
 """
@@ -176,6 +196,7 @@ function apply_config!(config)
     if !isempty(config.workspace)
         cd(config.workspace)
     end
+    SANDBOX[] = config.sandbox
     empty!(READ_ONLY_PATHS)
     append!(READ_ONLY_PATHS, abspath.(config.read_only))
     empty!(READ_WRITE_PATHS)
@@ -204,7 +225,9 @@ function julia_restart_handler(params)
     lock(SERVER_LOCK) do
         clean_up_session!(get!(SESSIONS, abspath(params["env_path"])) do
             JuliaSession(; use_revise=true, project_path=abspath(params["env_path"]),
-                read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH)
+                read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS,
+                worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH, sandbox=SANDBOX[],
+            )
         end)
         "Session restarted. A fresh session will start on next julia_eval call."
     end
@@ -243,9 +266,9 @@ function create_mcp_server()
                 description = """
                 ALWAYS use this tool to run Julia code. NEVER run julia via command line.
 
-                Persistent REPL session by env_path (lazy-started). Omit env_path for a temporary one-shot session.
-                Uses a temporary sandbox depot: package downloads/precompile cache are not persisted.
-                If env_path is writable, Project.toml/Manifest.toml edits may persist.
+                Persistent REPL session with state preserved between calls.
+                Each env_path gets its own session, started lazily.
+                Omit env_path for a temporary one-shot session.
                 """,
                 return_type = MCP.TextContent,
                 parameters = [
@@ -258,7 +281,7 @@ function create_mcp_server()
                     MCP.ToolParameter(
                         name = "env_path",
                         type = "string",
-                        description = "Julia project directory path. Omit for a temporary environment and session.",
+                        description = "Julia project directory path. If testing specify the test directory.",
                         default = "",
                     ),
                     MCP.ToolParameter(
@@ -278,6 +301,7 @@ function create_mcp_server()
                 IMPORTANT: Restarting is slow and loses all session state. Very rarely needed.
                 Revise.jl is loaded automatically in every session, so code changes to loaded packages are picked up without restarting.
                 Only restart as a last resort when the session is truly broken, or code changes that Revise cannot fix.
+                Do NOT restart just because source files were edited between script or test runs — Revise picks up those changes automatically.
                 """,
                 return_type = MCP.TextContent,
                 parameters = [
@@ -319,7 +343,6 @@ function @main(args::Vector{String})
         end
         exit(1)
     end
-    SAFE_ROOTFS() # reduce latency of tool calls
     server = create_mcp_server()
     MCP.start!(server)
     return
