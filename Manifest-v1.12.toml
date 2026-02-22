@@ -287,7 +287,7 @@ version = "2.1.1"
 deps = ["Dates", "ModelContextProtocol", "Random", "Sandbox"]
 path = "."
 uuid = "a01f8ab4-3772-46a4-8f25-b289fd6fcd4a"
-version = "0.1.0"
+version = "0.2.0-dev"
 
 [[deps.Scratch]]
 deps = ["Dates"]
