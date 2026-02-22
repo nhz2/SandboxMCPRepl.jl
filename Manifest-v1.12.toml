@@ -279,15 +279,15 @@ version = "0.7.0"
 
 [[deps.Sandbox]]
 deps = ["EnumX", "LazyArtifacts", "Libdl", "Preferences", "Random", "SHA", "Scratch", "TOML", "Tar", "Tar_jll", "UserNSSandbox_jll"]
-git-tree-sha1 = "560311be5e024eb0777f3dc9beed3c6a08b2a2a7"
+git-tree-sha1 = "604f78215b131defb5aa188d5679a6fd1501ab5d"
 uuid = "9307e30f-c43e-9ca7-d17c-c2dc59df670d"
-version = "2.1.1"
+version = "2.1.2"
 
 [[deps.SandboxMCPRepl]]
 deps = ["Dates", "ModelContextProtocol", "Random", "Sandbox"]
 path = "."
 uuid = "a01f8ab4-3772-46a4-8f25-b289fd6fcd4a"
-version = "0.2.0-dev"
+version = "0.2.0"
 
 [[deps.Scratch]]
 deps = ["Dates"]
