@@ -18,23 +18,25 @@ Requires Julia ≥1.12. The built-in sandbox requires Linux with a working Sandb
 
 ## Installation
 
-Clone this repo or download a release.
-
-Then instantiate the manifest by running:
+Install a release of this package into `~/packages/SandboxMCPRepl.jl`:
 
 ```sh
-julia --project=. -e "using Pkg; Pkg.instantiate()"
+mkdir -p ~/packages/SandboxMCPRepl.jl
+curl --location --output ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0.tar.gz https://github.com/nhz2/SandboxMCPRepl.jl/archive/refs/tags/v0.2.0.tar.gz
+tar xzf ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0.tar.gz -C ~/packages/SandboxMCPRepl.jl
+julia --project=~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0 -e "using Pkg; Pkg.instantiate()"
 ```
 
 ## Configuration
 
 You will want to set up the MCP server for each workspace to take advantage of the sandboxing.
 
-### VS Code (GitHub Copilot)
+In VS Code this requires a `.vscode/mcp.json` file.
+In Cursor it is a `.cursor/mcp.json` with the same format as VS Code.
 
-Add to your project's `.vscode/mcp.json`:
+Claude Code uses a different format, but it can convert from VS Code if you ask it nicely.
 
-Replace `${userHome}/github/SandboxMCPRepl.jl` with the location you have cloned this repo.
+### VS Code
 
 #### Using a [bubblewrap](https://github.com/containers/bubblewrap) sandbox to block network access
 
@@ -43,6 +45,8 @@ This assumes you have julia symlinks available in `~/.local/bin` and packages in
 Julia installed with juliaup currently will not work with `bwrap` see: https://github.com/JuliaLang/juliaup/issues/1204
 
 In this example an `agent-depot` directory is created in the workspace. This allows the Julia depot at `~/.julia` to be read only.
+
+Add to your project's `.vscode/mcp.json`:
 
 ```json
 {
@@ -65,8 +69,7 @@ In this example an `agent-depot` directory is created in the workspace. This all
                 "--ro-bind", "${userHome}/.julia", "${userHome}/.julia",
                 "--ro-bind-try", "${userHome}/bin", "${userHome}/bin",
                 "--ro-bind-try", "${userHome}/.local/bin", "${userHome}/.local/bin",
-                "--ro-bind-try", "${userHome}/packages/julias", "${userHome}/packages/julias",
-                "--ro-bind-try", "${userHome}/github/SandboxMCPRepl.jl", "${userHome}/github/SandboxMCPRepl.jl",
+                "--ro-bind-try", "${userHome}/packages", "${userHome}/packages",
                 "--bind", "${workspaceFolder}", "${workspaceFolder}",
                 "--chdir", "${workspaceFolder}",
                 "--unshare-all",
@@ -75,7 +78,7 @@ In this example an `agent-depot` directory is created in the workspace. This all
                 "--setenv", "JULIA_DEPOT_PATH", "${workspaceFolder}/agent-depot:${userHome}/.julia:",
                 "--setenv", "JULIA_PKG_OFFLINE", "true",
                 "julia",
-                "--project=${userHome}/github/SandboxMCPRepl.jl",
+                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0",
                 "--startup-file=no",
                 "--module=SandboxMCPRepl",
                 "--workspace=${workspaceFolder}",
@@ -93,6 +96,8 @@ In this example an `agent-depot` directory is created in the workspace. This all
 
 #### Using the built-in sandbox
 
+Add to your project's `.vscode/mcp.json`:
+
 ```json
 {
     "servers": {
@@ -100,7 +105,7 @@ In this example an `agent-depot` directory is created in the workspace. This all
             "type": "stdio",
             "command": "julia",
             "args": [
-                "--project=${userHome}/github/SandboxMCPRepl.jl",
+                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0",
                 "--startup-file=no",
                 "--module=SandboxMCPRepl",
                 "--workspace=${workspaceFolder}",
