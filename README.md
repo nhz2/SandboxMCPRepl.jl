@@ -22,9 +22,9 @@ Install a release of this package into `~/packages/SandboxMCPRepl.jl`:
 
 ```sh
 mkdir -p ~/packages/SandboxMCPRepl.jl
-curl --location --output ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0.tar.gz https://github.com/nhz2/SandboxMCPRepl.jl/archive/refs/tags/v0.2.0.tar.gz
-tar xzf ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0.tar.gz -C ~/packages/SandboxMCPRepl.jl
-julia --project=~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0 -e "using Pkg; Pkg.instantiate()"
+curl --location --output ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1.tar.gz https://github.com/nhz2/SandboxMCPRepl.jl/archive/refs/tags/v0.2.1.tar.gz
+tar xzf ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1.tar.gz -C ~/packages/SandboxMCPRepl.jl
+julia --project=~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1 -e "using Pkg; Pkg.instantiate()"
 ```
 
 ## Configuration
@@ -78,7 +78,7 @@ Add to your project's `.vscode/mcp.json`:
                 "--setenv", "JULIA_DEPOT_PATH", "${workspaceFolder}/agent-depot:${userHome}/.julia:",
                 "--setenv", "JULIA_PKG_OFFLINE", "true",
                 "julia",
-                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0",
+                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1",
                 "--startup-file=no",
                 "--module=SandboxMCPRepl",
                 "--workspace=${workspaceFolder}",
@@ -105,7 +105,7 @@ Add to your project's `.vscode/mcp.json`:
             "type": "stdio",
             "command": "julia",
             "args": [
-                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.0",
+                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1",
                 "--startup-file=no",
                 "--module=SandboxMCPRepl",
                 "--workspace=${workspaceFolder}",
