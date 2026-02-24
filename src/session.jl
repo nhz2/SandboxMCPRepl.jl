@@ -60,7 +60,7 @@ const REVISE_STARTUP = """
     try
         using Revise
     catch e
-        @warn "Error initializing Revise" exception=(e, catch_backtrace())
+        println(stderr, "Revise unavailable")
     end
     """
 
@@ -68,6 +68,7 @@ function repl_worker_script(; sentinel::Vector{UInt8}, startup::String)::String
     """
     $(startup)
     using InteractiveUtils
+    using REPL
     while true
         ## READ ##
         local n_to_read = ltoh(read(stdin, Int64))

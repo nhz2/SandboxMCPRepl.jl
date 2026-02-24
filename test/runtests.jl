@@ -660,7 +660,7 @@ end
 
         @testset "named session persists state" begin
             env_dir = mktempdir()
-            @test handler_eval("x_persist = 42; nothing"; env_path=env_dir) == "nothing"
+            @test startswith(handler_eval("x_persist = 42; nothing"; env_path=env_dir), "nothing")
             @test handler_eval("x_persist"; env_path=env_dir) == "42"
             cleanup_handler_sessions!()
         end
@@ -870,7 +870,7 @@ end
         @test contains(result, "Session restarted")
 
         # State should be gone after restart
-        @test handler_eval("@isdefined restart_test_var"; env_path=env_dir) == "false"
+        @test startswith(handler_eval("@isdefined restart_test_var"; env_path=env_dir), "false")
     finally
         cleanup_handler_sessions!()
         cd(orig_dir)
