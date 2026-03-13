@@ -455,7 +455,7 @@ end
         @test LOG_DIR[] == ""
 
         # Workspace changes directory
-        tdir = mktempdir()
+        tdir = realpath(mktempdir())
         config = parse_args(["--workspace=$tdir"])
         apply_config!(config)
         @test pwd() == tdir
@@ -611,7 +611,7 @@ end
         end
 
         @testset "--workspace affects relative env_path resolution" begin
-            workspace_dir = mktempdir()
+            workspace_dir = realpath(mktempdir())
             env_subdir = joinpath(workspace_dir, "myenv")
             mkpath(env_subdir)
             apply_config!(parse_args(["--workspace=$workspace_dir"]))
