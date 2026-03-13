@@ -22,9 +22,9 @@ Install a release of this package into `~/packages/SandboxMCPRepl.jl`:
 
 ```sh
 mkdir -p ~/packages/SandboxMCPRepl.jl
-curl --location --output ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1.tar.gz https://github.com/nhz2/SandboxMCPRepl.jl/archive/refs/tags/v0.2.1.tar.gz
-tar xzf ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1.tar.gz -C ~/packages/SandboxMCPRepl.jl
-julia --project=~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1 -e "using Pkg; Pkg.instantiate()"
+curl --location --output ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.3.0.tar.gz https://github.com/nhz2/SandboxMCPRepl.jl/archive/refs/tags/v0.3.0.tar.gz
+tar xzf ~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.3.0.tar.gz -C ~/packages/SandboxMCPRepl.jl
+julia --project=~/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.3.0 -e "using Pkg; Pkg.instantiate()"
 ```
 
 ## Configuration
