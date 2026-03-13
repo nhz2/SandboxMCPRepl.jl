@@ -1,20 +1,3 @@
-"""
-    remove_subdir_paths(paths) -> Vector{String}
-
-Given a list of directory paths, return only the roots — removing any path
-that is a subdirectory of another path in the list.  Paths are resolved
-via `realpath` before comparison, and duplicates are removed.
-"""
-function remove_subdir_paths(paths)
-    existing = filter(ispath, paths)
-    resolved = unique(map(realpath, existing))
-    filter(resolved) do p
-        !any(resolved) do x
-            startswith(p, x*"/")
-        end
-    end
-end
-
 function spawn_reader(name::Symbol, event_channel::Channel{Pair{Symbol, Vector{UInt8}}}, stream)
     Threads.@spawn begin
         try
@@ -108,57 +91,11 @@ function repl_worker_script(; sentinel::Vector{UInt8}, startup::String)::String
     """
 end
 
-"""
-    probe_julia(cmd::Vector{String}) -> (julia_cmd=String[], depot_path=String[])
-
-Probe a Julia installation to discover its binary path and depot paths.
-`cmd` is the user's launch command, e.g. `["julia", "+1.9", "--threads=4"]`.
-
-Returns a named tuple with:
-- `julia_cmd`: the resolved binary path plus any extra arguments from `cmd[2:end]`
-- `depot_path`: the depot path entries from the target Julia
-"""
-function probe_julia(cmd::Vector{String})
-    # Output format: "<ncodeunits>:<value>"
-    # Order: BINDIR, EXENAME, then each DEPOT_PATH entry
-    probe_script = """
-        for s in [Sys.BINDIR, Base.julia_exename(), DEPOT_PATH...]
-            print(ncodeunits(s), ":", s)
-        end
-    """
-    local output
-    output = readchomp(Cmd([cmd..., "--startup-file=no", "-e", probe_script]))
-    strings = String[]
-    pos = 1
-    while pos <= ncodeunits(output)
-        colon = findnext(':', output, pos)::Int
-        n = parse(Int, SubString(output, pos, colon - 1))
-        pos = colon + 1
-        val = String(SubString(output, pos, pos + n - 1))
-        push!(strings, val)
-        pos += n
-    end
-    length(strings) >= 2 || error("Expected at least 2 values (BINDIR, EXENAME) from probe, got $(length(strings))")
-    bindir = strings[1]
-    exename = strings[2]
-    depot_path = strings[3:end]
-    julia_bin = joinpath(bindir, exename)
-    julia_cmd = if length(cmd) >= 2 && startswith(cmd[2], '+')
-        [julia_bin; cmd[3:end]]
-    else
-        [julia_bin; cmd[2:end]]
-    end
-    return (; julia_cmd, depot_path)
-end
-
 mutable struct JuliaSession
     julia_cmd::Vector{String}
     use_revise::Bool
-    sandbox::Bool
     project_path::Union{String, Nothing}
     worker_env::Dict{String, String}
-    read_only_paths::Vector{String}
-    read_write_paths::Vector{String}
     sentinel::Vector{UInt8}
     working::Bool
     fresh::Bool
@@ -168,53 +105,23 @@ mutable struct JuliaSession
     worker_err::Pipe
     event_channel::Channel{Pair{Symbol, Vector{UInt8}}}
     worker::Union{Base.Process, Nothing} # output of `run` or `nothing`
-    exe # output of `Sandbox.preferred_executor()()` or `nothing`
 end
 
 function JuliaSession(;
         julia_cmd::Vector{String}=[joinpath(Sys.BINDIR, Base.julia_exename())],
-        depot_path::Vector{String}=copy(DEPOT_PATH),
         use_revise::Bool=false,
-        sandbox::Bool=true,
         project_path::Union{String, Nothing}=nothing,
         worker_env::Dict{String, String}=Dict{String, String}(),
-        read_only_paths::Vector{String}=String[],
-        read_write_paths::Vector{String}=String[],
         display_lines = 150
     )
-    if !sandbox
-        if !isempty(read_only_paths)
-            throw(ArgumentError("disabling the sandbox is incompatible with specifying read_only_paths"))
-        end
-        if !isempty(read_write_paths)
-            throw(ArgumentError("disabling the sandbox is incompatible with specifying read_write_paths"))
-        end
-    end
     sentinel = [codeunits("\n__JULIA-MCP-SENTINEL__"); rand(RandomDevice(), UInt8('A'):UInt8('Z'), 32); UInt8('\n');]
-    path_list_sep = ifelse(Sys.iswindows(), ";", ":")
-    worker_env = if sandbox
-        temp_depot = String(view(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 16), :))
-        merge(
-            Dict(
-                "PATH" => "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
-                "HOME" => ENV["HOME"],
-                "LANG" => "C.UTF-8",
-                "LINES" => "$(display_lines)",
-                "COLUMNS" => "300",
-                "JULIA_DEPOT_PATH" => join(["/tmp/"*temp_depot; depot_path;], ":"),
-                "JULIA_NUM_THREADS" => "1",
-            ),
-            worker_env,
-        )
-    else
+    worker_env = let
         d = merge(
+            copy(ENV),
             Dict(
                 "LINES" => "$(display_lines)",
                 "COLUMNS" => "300",
-                "JULIA_DEPOT_PATH" => join(depot_path, path_list_sep),
-                "JULIA_NUM_THREADS" => "1",
             ),
-            copy(ENV),
             worker_env,
         )
         # Remove JULIA_LOAD_PATH so the worker uses the default (@, @v#.#, @stdlib).
@@ -223,16 +130,11 @@ function JuliaSession(;
         delete!(d, "JULIA_LOAD_PATH")
         d
     end
-    syspath = dirname(dirname(julia_cmd[1]))
-    read_only_paths = remove_subdir_paths([read_only_paths; syspath; depot_path;])
     JuliaSession(
         copy(julia_cmd),
         use_revise,
-        sandbox,
         project_path,
         worker_env,
-        read_only_paths,
-        remove_subdir_paths(read_write_paths),
         sentinel,
         false,
         true,
@@ -241,7 +143,6 @@ function JuliaSession(;
         Pipe(),
         Pipe(),
         Channel{Pair{Symbol, Vector{UInt8}}}(6),
-        nothing,
         nothing,
     )
 end
@@ -290,12 +191,6 @@ function clean_up_session!(x::JuliaSession)
     catch
     end
     x.worker = nothing
-    try
-        exe = x.exe
-        !isnothing(exe) && Sandbox.cleanup(exe)
-    catch
-    end
-    x.exe = nothing
     x.working = false
     x.fresh = false
     nothing
@@ -308,47 +203,18 @@ function reset_session!(x::JuliaSession)::JuliaSession
     end
     proj_path = x.project_path
     pwd = if isnothing(proj_path)
-        if x.sandbox
-            "/tmp/"*String(view(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 16), :))
-        else
-            mktempdir()
-        end
+        mktempdir()
     else
         abspath(proj_path)
     end
     script = repl_worker_script(;x.sentinel, startup=ifelse(x.use_revise,REVISE_STARTUP,""))
     try
-        cmd = if x.sandbox
-            config = SandboxConfig(
-                merge(
-                    Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_only_paths)),
-                    Dict{String, String}(
-                        "/" => SAFE_ROOTFS(),
-                    ),
-                ),
-                Dict{String, String}(map(i -> abspath(i)=>abspath(i), x.read_write_paths)),
-                x.worker_env;
-                stdin = x.worker_in,
-                stdout = x.worker_out,
-                stderr = x.worker_err,
-                pwd,
-                persist = false,
-            )
-            x.exe = Sandbox.preferred_executor()()
-            pipeline(
-                Sandbox.build_executor_command(x.exe, config, Cmd([x.julia_cmd..., "--project=$(pwd)", "-e", script]));
-                stdin = x.worker_in,
-                stdout = x.worker_out,
-                stderr = x.worker_err,
-            )
-        else
-            pipeline(
-                setenv(Cmd([x.julia_cmd..., "--project=$(pwd)", "-e", script]), x.worker_env; dir=pwd);
-                stdin = x.worker_in,
-                stdout = x.worker_out,
-                stderr = x.worker_err,
-            )
-        end
+        cmd = pipeline(
+            setenv(Cmd([x.julia_cmd..., "--project=$(pwd)", "-e", script]), x.worker_env; dir=pwd);
+            stdin = x.worker_in,
+            stdout = x.worker_out,
+            stderr = x.worker_err,
+        )
         x.worker = run(cmd; wait=false)
         sleep(0.1)
         spawn_reader(:err, x.event_channel, x.worker_err)
@@ -456,7 +322,7 @@ function nice_string(r::EvalResults)::String
         if r.timed_out
             println(io, "\nTIMED OUT: Worker was killed after exceeding the time limit.")
         else
-            println(io, "\nWORKER DIED: Process exited with code $(r.exitcode).")
+            println(io, "\nWORKER EXITED: Process exited with code $(r.exitcode).")
         end
     end
     String(take!(io))

@@ -1,5 +1,4 @@
 module SandboxMCPRepl
-using Sandbox: Sandbox, SandboxConfig
 using Random: RandomDevice
 using ModelContextProtocol: ModelContextProtocol
 using Dates: Dates
@@ -15,23 +14,13 @@ const THIS_PACKAGE_VERSION::String = string(pkgversion(@__MODULE__))
 
 include("session.jl")
 
-# Copy the rootfs artifact to a path outside the depot to prevent overlay
-# leaks in nested sandboxes. Copying to /tmp breaks that cycle.
-const SAFE_ROOTFS = OncePerProcess{String}() do
-    cp(Sandbox.debian_rootfs(), joinpath(mktempdir(), "rootfs"))
-end
-
 const SERVER_LOCK = ReentrantLock()
 const SESSIONS = Dict{String, JuliaSession}()
 const SESSION_LOGS = Dict{String, String}()
-const READ_ONLY_PATHS = String[]
-const READ_WRITE_PATHS = String[]
 const WORKER_ENV = Dict{String, String}()
 const LOG_DIR = Ref("")
 const JULIA_CMD = String[]
-const WORKER_DEPOT_PATH = String[]
 const OUT_LIMIT = Ref(0)
-const SANDBOX = Ref(true)
 
 function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
     lock(SERVER_LOCK) do
@@ -39,12 +28,17 @@ function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
         env_path = params["env_path"]
         abs_env_path = abspath(env_path)
         is_temp = isempty(env_path)
+        if !is_temp && !isdir(abs_env_path)
+            return MCP.CallToolResult(
+                content = [Dict{String,Any}("type" => "text", "text" => "Error: env_path directory does not exist: $(repr(abs_env_path))")],
+                is_error = true
+            )
+        end
         session = if is_temp
-            JuliaSession(; use_revise=false, read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH, sandbox=SANDBOX[])
+            JuliaSession(; use_revise=false, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD)
         else
             get!(SESSIONS, abs_env_path) do
-                JuliaSession(; use_revise=true, project_path=abs_env_path,
-                    read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH, sandbox=SANDBOX[])
+                JuliaSession(; use_revise=true, project_path=abs_env_path, worker_env=WORKER_ENV, julia_cmd=JULIA_CMD)
             end
         end
         try
@@ -72,7 +66,7 @@ function julia_eval_handler(params)::Union{String, MCP.CallToolResult}
         catch e
             clean_up_session!(session)
             MCP.CallToolResult(
-                content = [MCP.TextContent(text = repr(e))],
+                content = [Dict{String,Any}("type" => "text", "text" => repr(e))],
                 is_error = true
             )
         finally
@@ -91,10 +85,6 @@ VERSION: $(THIS_PACKAGE_VERSION)
 Usage: sandbox-mcp-repl [julia_launcher_args...] -- [options] [-- worker_julia_cmd...]
 
 Options:
-    --sandbox={yes*|no}           Flag to enable the Sandbox.jl sandbox and temp Julia depot. Defaults to yes.
-                                --sandbox=no is incompatible with --read-only and --read-write.
-    --read-only=PATH1:PATH2:...   Colon-separated paths mounted read-only in the sandbox.
-    --read-write=PATH1:PATH2:...  Colon-separated paths mounted read-write in the sandbox.
     --env=KEY=VALUE               Environment variable passed to worker sessions. Can be repeated.
     --log-dir=PATH                Directory where logs of named-session inputs and outputs are saved. If empty or unset, no logs are saved. Temp sessions are never logged.
     --out-limit=BYTES             About half the max bytes of output before truncation (default: 20,000).
@@ -119,9 +109,6 @@ Throws `HelpRequested()` for `--help` and `-h`.
 Throws `VersionRequested()` for `--version` and `-v`.
 """
 function parse_args(args::Vector{String})
-    sandbox::Bool = true
-    ro = String[]
-    rw = String[]
     env = Dict{String, String}()
     logdir::String = ""
     outlimit::Int = DEFAULT_OUT_LIMIT
@@ -136,23 +123,7 @@ function parse_args(args::Vector{String})
         julia_launch_cmd = args[dashdash_idx+1:end]
     end
     for arg in main_args
-        local val
-        if startswith(arg, "--sandbox=")
-            val = split(arg, '='; limit=2)[2]
-            if val == "yes"
-                sandbox = true
-            elseif val == "no"
-                sandbox = false
-            else
-                throw(ArgumentError("Invalid --sandbox format (expected yes or no): $(repr(arg))"))
-            end
-        elseif startswith(arg, "--read-only=")
-            val = split(arg, '='; limit=2)[2]
-            append!(ro, filter(!isempty, split(val, ':')))
-        elseif startswith(arg, "--read-write=")
-            val = split(arg, '='; limit=2)[2]
-            append!(rw, filter(!isempty, split(val, ':')))
-        elseif startswith(arg, "--env=")
+        if startswith(arg, "--env=")
             parts = split(arg, '='; limit=3)
             if length(parts) != 3 || isempty(parts[2])
                 throw(ArgumentError("Invalid --env format (expected KEY=VALUE): $(repr(arg))"))
@@ -175,15 +146,7 @@ function parse_args(args::Vector{String})
             throw(ArgumentError("Unknown argument: $(repr(arg))"))
         end
     end
-    if !sandbox
-        if !isempty(ro)
-            throw(ArgumentError("--sandbox=no is incompatible with --read-only"))
-        end
-        if !isempty(rw)
-            throw(ArgumentError("--sandbox=no is incompatible with --read-write"))
-        end
-    end
-    return (;sandbox, read_only=ro, read_write=rw, env, log_dir=logdir, out_limit=outlimit, workspace, julia_launch_cmd)
+    return (;env, log_dir=logdir, out_limit=outlimit, workspace, julia_launch_cmd)
 end
 
 """
@@ -196,25 +159,16 @@ function apply_config!(config)
     if !isempty(config.workspace)
         cd(config.workspace)
     end
-    SANDBOX[] = config.sandbox
-    empty!(READ_ONLY_PATHS)
-    append!(READ_ONLY_PATHS, abspath.(config.read_only))
-    empty!(READ_WRITE_PATHS)
-    append!(READ_WRITE_PATHS, abspath.(config.read_write))
     empty!(WORKER_ENV)
     merge!(WORKER_ENV, config.env)
     LOG_DIR[] = isempty(config.log_dir) ? "" : abspath(config.log_dir)
     OUT_LIMIT[] = config.out_limit
-    # Resolve Julia command for sandboxed sessions
+    # Resolve Julia command for sessions
     empty!(JULIA_CMD)
-    empty!(WORKER_DEPOT_PATH)
     if !isempty(config.julia_launch_cmd)
-        probe_result = probe_julia(config.julia_launch_cmd)
-        append!(JULIA_CMD, probe_result.julia_cmd)
-        append!(WORKER_DEPOT_PATH, probe_result.depot_path)
+        append!(JULIA_CMD, config.julia_launch_cmd)
     else
         push!(JULIA_CMD, joinpath(Sys.BINDIR, Base.julia_exename()))
-        append!(WORKER_DEPOT_PATH, DEPOT_PATH)
     end
     return nothing
 end
@@ -225,8 +179,7 @@ function julia_restart_handler(params)
     lock(SERVER_LOCK) do
         clean_up_session!(get!(SESSIONS, abspath(params["env_path"])) do
             JuliaSession(; use_revise=true, project_path=abspath(params["env_path"]),
-                read_only_paths=READ_ONLY_PATHS, read_write_paths=READ_WRITE_PATHS,
-                worker_env=WORKER_ENV, julia_cmd=JULIA_CMD, depot_path=WORKER_DEPOT_PATH, sandbox=SANDBOX[],
+                worker_env=WORKER_ENV, julia_cmd=JULIA_CMD,
             )
         end)
         "Session restarted. A fresh session will start on next julia_eval call."

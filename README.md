@@ -6,9 +6,9 @@ The simplest alternative is giving your AI assistant a shell tool to call `julia
 
 The tool prompts and MCP interface design are based on [julia-mcp](https://github.com/aplavin/julia-mcp) by Alexander Plavin.
 
-Requires Julia ≥1.12. The built-in sandbox requires Linux with a working Sandbox.jl.
+Requires Julia ≥1.12 and bubblewrap (`bwrap`) for a sandbox.
 
-> **The built-in sandbox does not fully isolate the Julia process.** By default the Julia process runs in a [Sandbox.jl](https://github.com/JuliaContainerization/Sandbox.jl) sandbox. This makes it harder to accidentally break your `~/.julia` directory, but doesn't block network access.
+> **There is no built-in sandbox** Always run this mcp in a sandbox with `bwrap` or another sandboxing method.
 
 ## Tools
 
@@ -44,7 +44,7 @@ This assumes you have julia symlinks available in `~/.local/bin` and packages in
 
 Julia installed with juliaup currently will not work with `bwrap` see: https://github.com/JuliaLang/juliaup/issues/1204
 
-In this example an `agent-depot` directory is created in the workspace. This allows the Julia depot at `~/.julia` to be read only.
+In this example `agent-depot` and `agent-logs` directories are created in the workspace. This allows the Julia depot at `~/.julia` to be read only. `agent-logs` is used to store logs of the code and outputs for each persistent session.
 
 Add to your project's `.vscode/mcp.json`:
 
@@ -78,41 +78,13 @@ Add to your project's `.vscode/mcp.json`:
                 "--setenv", "JULIA_DEPOT_PATH", "${workspaceFolder}/agent-depot:${userHome}/.julia:",
                 "--setenv", "JULIA_PKG_OFFLINE", "true",
                 "julia",
-                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1",
+                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.3.0",
                 "--startup-file=no",
                 "--module=SandboxMCPRepl",
-                "--workspace=${workspaceFolder}",
                 "--log-dir=agent-logs",
-                "--sandbox=no",
                 "--",
                 "julia",
                 "--startup-file=no",
-                "--threads=4"
-            ],
-        }
-    }
-}
-```
-
-#### Using the built-in sandbox
-
-Add to your project's `.vscode/mcp.json`:
-
-```json
-{
-    "servers": {
-        "sandbox-julia": {
-            "type": "stdio",
-            "command": "julia",
-            "args": [
-                "--project=${userHome}/packages/SandboxMCPRepl.jl/SandboxMCPRepl.jl-0.2.1",
-                "--startup-file=no",
-                "--module=SandboxMCPRepl",
-                "--workspace=${workspaceFolder}",
-                "--log-dir=agent-logs",
-                "--read-write=.",
-                "--",
-                "julia",
                 "--threads=4"
             ],
         }
@@ -123,10 +95,6 @@ Add to your project's `.vscode/mcp.json`:
 ### Server CLI arguments
 
 ```text
---sandbox={yes*|no}           Flag to enable the Sandbox.jl sandbox and temp Julia depot. Defaults to yes.
-                              --sandbox=no is incompatible with --read-only and --read-write.
---read-only=PATH1:PATH2:...   Colon-separated paths mounted read-only in the sandbox.
---read-write=PATH1:PATH2:...  Colon-separated paths mounted read-write in the sandbox.
 --env=KEY=VALUE               Environment variable passed to worker sessions. Can be repeated.
 --log-dir=PATH                Directory where logs of named-session inputs and outputs are saved. If empty or unset, no logs are saved. Temp sessions are never logged.
 --out-limit=BYTES             About half the max bytes of output before truncation (default: 20,000).
