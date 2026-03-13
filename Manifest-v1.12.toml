@@ -184,9 +184,9 @@ version = "1.11.0"
 
 [[deps.ModelContextProtocol]]
 deps = ["Base64", "DataStructures", "Dates", "HTTP", "JSON3", "Logging", "MacroTools", "OrderedCollections", "StructTypes", "URIs", "UUIDs"]
-git-tree-sha1 = "81fd8a44820c319f5f305fb70cfc2108820a1540"
+git-tree-sha1 = "c895fe569de2f0b362c734721239fc1df371b1b4"
 uuid = "c58f755f-f2a7-4f48-bf29-4e9659b78499"
-version = "0.4.0"
+version = "0.4.1"
 
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
@@ -259,7 +259,7 @@ version = "0.7.0"
 deps = ["Dates", "ModelContextProtocol", "Random"]
 path = "."
 uuid = "a01f8ab4-3772-46a4-8f25-b289fd6fcd4a"
-version = "0.2.1"
+version = "0.3.0"
 
 [[deps.Serialization]]
 uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"

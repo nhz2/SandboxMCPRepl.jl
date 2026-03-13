@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [v0.3.0](https://github.com/nhz2/SandboxMCPRepl.jl/tree/v0.3.0) - 2026-03-13
+
 - BREAKING: Removed Sandbox.jl built-in sandbox. Instead run the entire MCP server in a sandbox using bubblewrap.
 
 ## [v0.2.1](https://github.com/nhz2/SandboxMCPRepl.jl/tree/v0.2.1) - 2026-02-24
