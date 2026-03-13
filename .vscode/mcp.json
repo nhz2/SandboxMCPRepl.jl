@@ -36,7 +36,7 @@
                 "julia",
                 "--startup-file=no",
                 "--threads=4"
-            ],
+            ]
         }
     }
 }

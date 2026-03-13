@@ -8,7 +8,7 @@ The tool prompts and MCP interface design are based on [julia-mcp](https://githu
 
 Requires Julia ≥1.12 and bubblewrap (`bwrap`) for a sandbox.
 
-> **There is no built-in sandbox** Always run this mcp in a sandbox with `bwrap` or another sandboxing method.
+> **There is no built-in sandbox.** Always run this MCP in a sandbox with `bwrap` or another sandboxing method.
 
 ## Tools
 
@@ -86,7 +86,7 @@ Add to your project's `.vscode/mcp.json`:
                 "julia",
                 "--startup-file=no",
                 "--threads=4"
-            ],
+            ]
         }
     }
 }
