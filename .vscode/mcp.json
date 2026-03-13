@@ -31,14 +31,12 @@
                 "--project=${userHome}/github/SandboxMCPRepl.jl",
                 "--startup-file=no",
                 "--module=SandboxMCPRepl",
-                "--workspace=${workspaceFolder}",
                 "--log-dir=agent-logs",
-                "--sandbox=no",
                 "--",
                 "julia",
                 "--startup-file=no",
                 "--threads=4"
-            ],
+            ]
         }
     }
 }

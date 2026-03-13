@@ -13,7 +13,6 @@ using SandboxMCPRepl:
     nbytes,
     nice_string,
     log_string,
-    probe_julia,
     HelpRequested,
     VersionRequested,
     THIS_PACKAGE_VERSION,
@@ -22,17 +21,12 @@ using SandboxMCPRepl:
     julia_list_sessions_handler,
     SESSIONS,
     SESSION_LOGS,
-    SANDBOX,
-    READ_ONLY_PATHS,
-    READ_WRITE_PATHS,
     WORKER_ENV,
     LOG_DIR,
     JULIA_CMD,
-    WORKER_DEPOT_PATH,
     OUT_LIMIT,
     apply_config!,
-    parse_args,
-    remove_subdir_paths
+    parse_args
 
 using Random: RandomDevice
 
@@ -47,21 +41,6 @@ Aqua.test_project_extras(SandboxMCPRepl)
 Aqua.test_stale_deps(SandboxMCPRepl)
 Aqua.test_piracies(SandboxMCPRepl)
 Aqua.test_persistent_tasks(SandboxMCPRepl)
-
-@testset "remove_subdir_paths" begin
-    # Create a temp directory tree for testing
-    root = mktempdir()
-    a = joinpath(root, "a")
-    ab = joinpath(root, "a", "b")
-    abc = joinpath(root, "a", "b", "c")
-    d = joinpath(root, "d")
-    de = joinpath(root, "d", "e")
-    mkpath(abc)
-    mkpath(de)
-    # Subdirectories are removed, only roots kept
-    @test sort(remove_subdir_paths([a, ab, a, joinpath(a, "nonexisting"), abc, d, de])) == sort([a, d])
-    rm(root; recursive=true)
-end
 
 @testset "LimitedOutput" begin
     @test LimitedOutput() isa LimitedOutput
@@ -145,7 +124,7 @@ end
 
     # Worker died (not timeout)
     r = EvalResults(LimitedOutput(collect(codeunits("x"))), LimitedOutput(), false, true, 42)
-    @test contains(nice_string(r), "WORKER DIED")
+    @test contains(nice_string(r), "WORKER EXITED")
     @test contains(nice_string(r), "42")
     @test contains(nice_string(r), "x")
     @test contains(log_string(r), "[STATUS] Worker exited with code: 42")
@@ -312,22 +291,6 @@ end
         """, time_ns()+500*10^9, 2000)
         @test nice_string(r.out) == "false"
 
-        # Depot changes are not persisted
-        reset_session!(x)
-        r = eval_session!(x, """
-            mkpath(DEPOT_PATH[1])
-            write(joinpath(DEPOT_PATH[1], "test-file.txt"), "stuff in file")
-            println(read(joinpath(DEPOT_PATH[1], "test-file.txt"), String))
-        """, time_ns()+500*10^9, 2000)
-        @test nice_string(r.out) == "stuff in file\nnothing"
-        @test !r.worker_died
-        reset_session!(x)
-        r = eval_session!(x, """
-            isfile(joinpath(DEPOT_PATH[1], "test-file.txt"))
-        """, time_ns()+500*10^9, 2000)
-        @test nice_string(r.out) == "false"
-        @test !r.worker_died
-
         # Process dies in the background in between evals
         reset_session!(x)
         r = eval_session!(x, """
@@ -351,20 +314,7 @@ end
         clean_up_session!(x)
     end
 
-    # project_path, also requires the path to be available
     x = JuliaSession(; project_path=joinpath(@__DIR__, "testenv"))
-    reset_session!(x)
-    r = eval_session!(x, "using Pkg; Pkg.instantiate(); using Example", time_ns()+600*10^9, 2000)
-    @test startswith(nice_string(r.out), "\nERROR: LoadError:")
-    clean_up_session!(x)
-
-    x = JuliaSession(; project_path=joinpath(@__DIR__, "testenv"), read_only_paths=[joinpath(@__DIR__, "testenv")])
-    reset_session!(x)
-    r = eval_session!(x, "using Pkg; Pkg.instantiate(); using Example; pwd()", time_ns()+600*10^9, 2000)
-    @test nice_string(r.out) == repr(joinpath(@__DIR__, "testenv"))
-    clean_up_session!(x)
-
-    x = JuliaSession(; project_path=joinpath(@__DIR__, "testenv"), read_write_paths=[joinpath(@__DIR__, "testenv")])
     reset_session!(x)
     r = eval_session!(x, "using Pkg; Pkg.instantiate(); using Example; pwd()", time_ns()+600*10^9, 2000)
     @test nice_string(r.out) == repr(joinpath(@__DIR__, "testenv"))
@@ -377,34 +327,6 @@ end
     @test nice_string(r.out) == repr("yes")
     clean_up_session!(x)
 
-    # read_only_paths
-    test_dir = mktempdir()
-    write(joinpath(test_dir, "test-file.txt"), "stuff")
-    x = JuliaSession(; read_only_paths=[test_dir])
-    reset_session!(x)
-    r = eval_session!(x, "read($(repr(joinpath(test_dir, "test-file.txt"))),String)", time_ns()+600*10^9, 2000)
-    @test nice_string(r.out) == repr("stuff")
-    r = eval_session!(x, """
-        write($(repr(joinpath(test_dir, "test-file.txt"))), "edit")
-    """, time_ns()+600*10^9, 2000)
-    @test contains(nice_string(r.out), "Read-only file system")
-    @test contains(nice_string(r.out), "ERROR:")
-    clean_up_session!(x)
-
-    # read_write_paths
-    test_dir = mktempdir()
-    write(joinpath(test_dir, "test-file.txt"), "stuff")
-    x = JuliaSession(; read_write_paths=[test_dir])
-    reset_session!(x)
-    r = eval_session!(x, "read($(repr(joinpath(test_dir, "test-file.txt"))),String)", time_ns()+600*10^9, 2000)
-    @test nice_string(r.out) == repr("stuff")
-    r = eval_session!(x, """
-        write($(repr(joinpath(test_dir, "test-file.txt"))), "edit")
-    """, time_ns()+600*10^9, 2000)
-    @test nice_string(r.out) == "4"
-    @test read(joinpath(test_dir, "test-file.txt"), String) == "edit"
-    clean_up_session!(x)
-
     # display_lines
     x = JuliaSession(; display_lines=240)
     reset_session!(x)
@@ -413,64 +335,24 @@ end
     clean_up_session!(x)
 
     # julia_cmd and depot_path kwargs
-    probe_result = probe_julia([joinpath(Sys.BINDIR, Base.julia_exename())])
     x = JuliaSession(;
-        julia_cmd=probe_result.julia_cmd,
-        depot_path=probe_result.depot_path,
+        julia_cmd=[joinpath(Sys.BINDIR, Base.julia_exename())],
     )
     reset_session!(x)
     r = eval_session!(x, "1+1", time_ns()+600*10^9, 2000)
     @test nice_string(r.out) == "2"
     @test !r.worker_died
     clean_up_session!(x)
-
-    # no sandbox
-    test_dir = mktempdir()
-    write(joinpath(test_dir, "test-file.txt"), "stuff")
-    x = JuliaSession(;sandbox=false)
-    reset_session!(x)
-    r = eval_session!(x, "read($(repr(joinpath(test_dir, "test-file.txt"))),String)", time_ns()+600*10^9, 2000)
-    @test nice_string(r.out) == repr("stuff")
-    @test !r.worker_died
-    clean_up_session!(x)
-end
-
-@testset "probe_julia" begin
-    result = probe_julia([joinpath(Sys.BINDIR, Base.julia_exename())])
-    @test length(result.julia_cmd) == 1
-    @test result.julia_cmd[1] == joinpath(Sys.BINDIR, Base.julia_exename())
-    @test !isempty(result.depot_path)
 end
 
 @testset "parse_args" begin
     # Empty args
     c = parse_args(String[])
-    @test c.sandbox
-    @test isempty(c.read_only)
-    @test isempty(c.read_write)
     @test isempty(c.env)
     @test c.log_dir == ""
     @test c.out_limit == SandboxMCPRepl.DEFAULT_OUT_LIMIT
     @test c.workspace == ""
     @test isempty(c.julia_launch_cmd)
-
-    # --sandbox=no
-    c = parse_args(String["--sandbox=no"])
-    @test c.sandbox == false
-    @test_throws ArgumentError parse_args(["--read-only=/a:/b:/c", "--sandbox=no"])
-    @test_throws ArgumentError parse_args(["--read-write=/d:/e", "--sandbox=no"])
-
-    # --read-only with multiple colon-separated paths
-    c = parse_args(["--read-only=/a:/b:/c"])
-    @test c.read_only == ["/a", "/b", "/c"]
-
-    # --read-only with single path
-    c = parse_args(["--read-only=/x"])
-    @test c.read_only == ["/x"]
-
-    # --read-write with multiple paths
-    c = parse_args(["--read-write=/d:/e"])
-    @test c.read_write == ["/d", "/e"]
 
     # --env basic
     c = parse_args(["--env=FOO=bar"])
@@ -525,13 +407,12 @@ end
     @test_throws ArgumentError parse_args(["positional"])
 
     # -- separator: everything after goes to julia_launch_cmd
-    c = parse_args(["--read-only=/a", "--", "julia", "+1.9", "--threads=4"])
-    @test c.read_only == ["/a"]
+    c = parse_args(["--out-limit=256", "--", "julia", "+1.9", "--threads=4"])
+    @test c.out_limit == 256
     @test c.julia_launch_cmd == ["julia", "+1.9", "--threads=4"]
 
     # -- with nothing before it
     c = parse_args(["--", "/opt/julia/bin/julia"])
-    @test isempty(c.read_only)
     @test c.julia_launch_cmd == ["/opt/julia/bin/julia"]
 
     # -- with nothing after it
@@ -540,8 +421,6 @@ end
 
     # Combined options
     c = parse_args([
-        "--read-only=/ro1:/ro2",
-        "--read-write=/rw1",
         "--env=HOME=/sandbox",
         "--env=LANG=C",
         "--log-dir=/logs",
@@ -549,18 +428,11 @@ end
         "--workspace=/work",
         "--", "julia", "+1.10"
     ])
-    @test c.read_only == ["/ro1", "/ro2"]
-    @test c.read_write == ["/rw1"]
     @test c.env == Dict("HOME" => "/sandbox", "LANG" => "C")
     @test c.log_dir == "/logs"
     @test c.out_limit == 5000
-    @test c.sandbox
     @test c.workspace == "/work"
     @test c.julia_launch_cmd == ["julia", "+1.10"]
-
-    # Empty colon-separated segments are filtered out
-    c = parse_args(["--read-only=:/a::/b:"])
-    @test c.read_only == ["/a", "/b"]
 end
 
 @testset "apply_config!" begin
@@ -568,34 +440,22 @@ end
     orig_dir = pwd()
     try
         # Basic config with no workspace change
-        config = parse_args(["--read-only=/tmp", "--read-write=/var", "--env=X=1", "--out-limit=999"])
+        config = parse_args(["--env=X=1", "--out-limit=999"])
         apply_config!(config)
-        @test SANDBOX[]
-        @test READ_ONLY_PATHS == [abspath("/tmp")]
-        @test READ_WRITE_PATHS == [abspath("/var")]
         @test WORKER_ENV == Dict("X" => "1")
         @test OUT_LIMIT[] == 999
         @test LOG_DIR[] == ""
         @test !isempty(JULIA_CMD)
-        @test !isempty(WORKER_DEPOT_PATH)
 
         # Empty config resets everything
         config = parse_args(String[])
         apply_config!(config)
-        @test SANDBOX[]
-        @test isempty(READ_ONLY_PATHS)
-        @test isempty(READ_WRITE_PATHS)
         @test isempty(WORKER_ENV)
         @test OUT_LIMIT[] == SandboxMCPRepl.DEFAULT_OUT_LIMIT
         @test LOG_DIR[] == ""
 
-        # --sandbox=no
-        config = parse_args(String["--sandbox=no"])
-        apply_config!(config)
-        @test !SANDBOX[]
-
         # Workspace changes directory
-        tdir = mktempdir()
+        tdir = realpath(mktempdir())
         config = parse_args(["--workspace=$tdir"])
         apply_config!(config)
         @test pwd() == tdir
@@ -665,42 +525,7 @@ end
             cleanup_handler_sessions!()
         end
 
-        @testset "--read-only makes paths readable but not writable" begin
-            test_dir = mktempdir()
-            write(joinpath(test_dir, "file.txt"), "readonly-content")
-            apply_config!(parse_args(["--read-only=$test_dir"]))
-
-            # Can read
-            result = handler_eval("read($(repr(joinpath(test_dir, "file.txt"))), String)")
-            @test result == repr("readonly-content")
-
-            # Cannot write
-            result = handler_eval("""
-                write($(repr(joinpath(test_dir, "file.txt"))), "bad")
-            """)
-            @test contains(result, "Read-only file system")
-            cleanup_handler_sessions!()
-            apply_config!(parse_args(String[]))
-        end
-
-        @testset "--read-write makes paths readable and writable" begin
-            test_dir = mktempdir()
-            write(joinpath(test_dir, "file.txt"), "original")
-            apply_config!(parse_args(["--read-write=$test_dir"]))
-
-            # Can read
-            result = handler_eval("read($(repr(joinpath(test_dir, "file.txt"))), String)")
-            @test result == repr("original")
-
-            # Can write
-            result = handler_eval("write($(repr(joinpath(test_dir, "file.txt"))), \"edited\")")
-            @test result == "6"
-            @test read(joinpath(test_dir, "file.txt"), String) == "edited"
-
-            apply_config!(parse_args(String[]))
-        end
-
-        @testset "--env sets environment variables in sandbox" begin
+        @testset "--env sets environment variables in repl" begin
             test_var1 = String(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 20))
             test_var2 = String(rand(RandomDevice(), UInt8('A'):UInt8('Z'), 20))
             apply_config!(parse_args(["--env=$(test_var1)=hello123", "--env=$(test_var2)=world"]))
@@ -786,8 +611,9 @@ end
         end
 
         @testset "--workspace affects relative env_path resolution" begin
-            workspace_dir = mktempdir()
+            workspace_dir = realpath(mktempdir())
             env_subdir = joinpath(workspace_dir, "myenv")
+            mkpath(env_subdir)
             apply_config!(parse_args(["--workspace=$workspace_dir"]))
 
             # Using relative env_path should resolve relative to workspace
@@ -798,40 +624,27 @@ end
             apply_config!(parse_args(String[]))
         end
 
-        @testset "--read-only with multiple paths" begin
-            dir1 = mktempdir()
-            dir2 = mktempdir()
-            write(joinpath(dir1, "a.txt"), "from-dir1")
-            write(joinpath(dir2, "b.txt"), "from-dir2")
-            apply_config!(parse_args(["--read-only=$dir1:$dir2"]))
-
-            @test handler_eval("read($(repr(joinpath(dir1, "a.txt"))), String)") == repr("from-dir1")
-            @test handler_eval("read($(repr(joinpath(dir2, "b.txt"))), String)") == repr("from-dir2")
-
+        @testset "non-existing env_path returns error" begin
             apply_config!(parse_args(String[]))
+
+            bad_path = "/tmp/does_not_exist_$(rand(UInt64))"
+            result = handler_eval("1+1"; env_path=bad_path)
+            @test !(result isa String)
+            @test result.is_error
+            @test result.content == [Dict{String,Any}("type" => "text", "text" => "Error: env_path directory does not exist: $(repr(abspath(bad_path)))")]
+
+            cleanup_handler_sessions!()
         end
 
-        @testset "--read-only + --read-write combined" begin
-            ro_dir = mktempdir()
-            rw_dir = mktempdir()
-            write(joinpath(ro_dir, "ro.txt"), "readonly")
-            write(joinpath(rw_dir, "rw.txt"), "readwrite")
-            apply_config!(parse_args(["--read-only=$ro_dir", "--read-write=$rw_dir"]))
+        @testset "bad julia_cmd returns error" begin
+            apply_config!(parse_args(["--", "/nonexistent/julia"]))
+            env_dir = mktempdir()
 
-            # Can read both
-            @test handler_eval("read($(repr(joinpath(ro_dir, "ro.txt"))), String)") == repr("readonly")
-            @test handler_eval("read($(repr(joinpath(rw_dir, "rw.txt"))), String)") == repr("readwrite")
+            result = handler_eval("1+1"; env_path=env_dir)
+            @test !(result isa String)
+            @test result.is_error
 
-            # Can only write to rw_dir
-            result = handler_eval("""
-                write($(repr(joinpath(ro_dir, "ro.txt"))), "bad")
-            """)
-            @test contains(result, "Read-only file system")
-
-            result = handler_eval("write($(repr(joinpath(rw_dir, "rw.txt"))), \"updated\")")
-            @test result == "7"
-            @test read(joinpath(rw_dir, "rw.txt"), String) == "updated"
-
+            cleanup_handler_sessions!()
             apply_config!(parse_args(String[]))
         end
 
@@ -874,28 +687,6 @@ end
     finally
         cleanup_handler_sessions!()
         cd(orig_dir)
-    end
-end
-
-@testset "tmp does not leak into sandbox" begin
-    # Create a secret file on the host in /tmp
-    host_tmpdir = mktempdir()
-    secret_file = joinpath(host_tmpdir, "secret.txt")
-    write(secret_file, "SECRET")
-    @test isfile(secret_file)
-
-    x = JuliaSession()
-    try
-        reset_session!(x)
-        # Try to read the host's secret file from inside the sandbox
-        r = eval_session!(x, """
-            isfile($(repr(secret_file)))
-        """, time_ns()+60*10^9, 2000)
-        @test nice_string(r.out) == "false"
-        @test !r.worker_died
-    finally
-        clean_up_session!(x)
-        rm(host_tmpdir; recursive=true)
     end
 end
 
