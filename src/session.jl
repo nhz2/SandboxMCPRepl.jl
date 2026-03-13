@@ -105,6 +105,7 @@ mutable struct JuliaSession
     worker_err::Pipe
     event_channel::Channel{Pair{Symbol, Vector{UInt8}}}
     worker::Union{Base.Process, Nothing} # output of `run` or `nothing`
+    temp_dir_to_cleanup::Union{String, Nothing}
 end
 
 function JuliaSession(;
@@ -143,6 +144,7 @@ function JuliaSession(;
         Pipe(),
         Pipe(),
         Channel{Pair{Symbol, Vector{UInt8}}}(6),
+        nothing,
         nothing,
     )
 end
@@ -191,6 +193,12 @@ function clean_up_session!(x::JuliaSession)
     catch
     end
     x.worker = nothing
+    try
+        temp_dir_to_cleanup = x.temp_dir_to_cleanup
+        !isnothing(temp_dir_to_cleanup) && rm(temp_dir_to_cleanup; force=true, recursive=true)
+    catch
+    end
+    x.temp_dir_to_cleanup = nothing
     x.working = false
     x.fresh = false
     nothing
@@ -203,7 +211,7 @@ function reset_session!(x::JuliaSession)::JuliaSession
     end
     proj_path = x.project_path
     pwd = if isnothing(proj_path)
-        mktempdir()
+        x.temp_dir_to_cleanup = mktempdir()
     else
         abspath(proj_path)
     end
